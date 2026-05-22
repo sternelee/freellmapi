@@ -183,7 +183,7 @@ proxyRouter.post('/chat/completions', async (c) => {
   if (!parsed.success) {
     return c.json({
       error: {
-        message: `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`,
+        message: `Invalid request: ${parsed.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
         type: 'invalid_request_error',
       },
     }, 400);

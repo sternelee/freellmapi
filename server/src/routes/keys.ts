@@ -37,7 +37,7 @@ keysRouter.post('/', async (c) => {
   const body = await c.req.json().catch(() => null);
   const parsed = createKeySchema.safeParse(body);
   if (!parsed.success) {
-    return c.json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } }, 400);
+    return c.json({ error: { message: parsed.error.issues.map((e: { message: string }) => e.message).join(', ') } }, 400);
   }
 
   const { platform, apiKey, label = '' } = parsed.data;
