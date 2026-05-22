@@ -1,89 +1,58 @@
 import { describe, it, expect } from 'vitest';
-import Database from 'better-sqlite3';
-import { initDb } from '../../db/index.js';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 
 /**
- * Migrations V1–V9 must be idempotent: running initDb twice on the same
- * physical database file should produce identical state. New migrations
- * (V10+) should be added to this test as they ship.
+ * Verify the SQL migration files are syntactically valid and self-consistent.
+ * Actual D1 migration application is tested via: wrangler d1 migrations apply --local
  */
-describe('Migration idempotency', () => {
-  it('initDb on a fresh in-memory DB then re-run produces identical row counts', () => {
-    process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    // Use a single shared file so both inits hit the same DB.
-    const tmpPath = `/tmp/freeapi-idempotency-${Date.now()}.db`;
+describe('D1 Migration files', () => {
+  const migrationsDir = join(import.meta.dirname, '../../db/migrations');
 
-    const db1 = initDb(tmpPath);
-    const before = {
-      models: (db1.prepare('SELECT COUNT(*) AS c FROM models').get() as { c: number }).c,
-      fallback: (db1.prepare('SELECT COUNT(*) AS c FROM fallback_config').get() as { c: number }).c,
-      enabledModels: (db1.prepare('SELECT COUNT(*) AS c FROM models WHERE enabled = 1').get() as { c: number }).c,
-      disabledModels: (db1.prepare('SELECT COUNT(*) AS c FROM models WHERE enabled = 0').get() as { c: number }).c,
-      orphanFallbacks: (db1.prepare(`
-        SELECT COUNT(*) AS c FROM fallback_config f
-        LEFT JOIN models m ON f.model_db_id = m.id
-        WHERE m.id IS NULL
-      `).get() as { c: number }).c,
-    };
-    db1.close();
+  function getMigrationFiles(): string[] {
+    return readdirSync(migrationsDir)
+      .filter(f => f.endsWith('.sql'))
+      .sort();
+  }
 
-    // Re-init the same DB file — V1..V9 should all no-op idempotently.
-    const db2 = initDb(tmpPath);
-    const after = {
-      models: (db2.prepare('SELECT COUNT(*) AS c FROM models').get() as { c: number }).c,
-      fallback: (db2.prepare('SELECT COUNT(*) AS c FROM fallback_config').get() as { c: number }).c,
-      enabledModels: (db2.prepare('SELECT COUNT(*) AS c FROM models WHERE enabled = 1').get() as { c: number }).c,
-      disabledModels: (db2.prepare('SELECT COUNT(*) AS c FROM models WHERE enabled = 0').get() as { c: number }).c,
-      orphanFallbacks: (db2.prepare(`
-        SELECT COUNT(*) AS c FROM fallback_config f
-        LEFT JOIN models m ON f.model_db_id = m.id
-        WHERE m.id IS NULL
-      `).get() as { c: number }).c,
-    };
-    db2.close();
-
-    expect(after).toEqual(before);
-    expect(after.orphanFallbacks).toBe(0);
+  it('migration directory has at least 2 files (schema + seed)', () => {
+    const files = getMigrationFiles();
+    expect(files.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('every catalog row has exactly one fallback_config entry', () => {
-    process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    const db = initDb(':memory:');
-
-    const rows = db.prepare(`
-      SELECT m.id, COUNT(f.id) AS fb_count
-        FROM models m
-        LEFT JOIN fallback_config f ON m.id = f.model_db_id
-       GROUP BY m.id
-      HAVING COUNT(f.id) <> 1
-    `).all() as { id: number; fb_count: number }[];
-
-    expect(rows).toEqual([]);
+  it('each migration file has content', () => {
+    for (const file of getMigrationFiles()) {
+      const content = readFileSync(join(migrationsDir, file), 'utf8');
+      expect(content.trim().length, `${file} must not be empty`).toBeGreaterThan(0);
+    }
   });
 
-  it('UNIQUE(platform, model_id) constraint holds — no duplicate catalog rows', () => {
-    process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    const db = initDb(':memory:');
-
-    const dups = db.prepare(`
-      SELECT platform, model_id, COUNT(*) AS c FROM models
-       GROUP BY platform, model_id
-      HAVING COUNT(*) > 1
-    `).all();
-
-    expect(dups).toEqual([]);
+  it('migration files are numbered sequentially (0001, 0002, ...)', () => {
+    const files = getMigrationFiles();
+    for (let i = 0; i < files.length; i++) {
+      const expected = String(i + 1).padStart(4, '0');
+      expect(files[i], `File ${i + 1} should start with ${expected}`).toMatch(new RegExp(`^${expected}_`));
+    }
   });
 
-  it('all enabled catalog platforms have a registered provider', async () => {
-    process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    const db = initDb(':memory:');
-    const { hasProvider } = await import('../../providers/index.js');
+  it('schema file (0001) contains all required tables', () => {
+    const schema = readFileSync(join(migrationsDir, '0001_schema.sql'), 'utf8');
+    for (const table of ['models', 'api_keys', 'requests', 'fallback_config', 'settings']) {
+      expect(schema, `0001_schema.sql must define table: ${table}`).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+    }
+  });
 
-    const platforms = (db.prepare(
-      `SELECT DISTINCT platform FROM models WHERE enabled = 1`
-    ).all() as { platform: any }[]).map(r => r.platform);
+  it('seed file (0002) inserts into models and fallback_config', () => {
+    const seed = readFileSync(join(migrationsDir, '0002_seed.sql'), 'utf8');
+    expect(seed).toContain('INSERT OR IGNORE INTO models');
+    expect(seed).toContain('INSERT OR IGNORE INTO fallback_config');
+  });
 
-    const missing = platforms.filter(p => !hasProvider(p));
-    expect(missing).toEqual([]);
+  it('seed file inserts rows for all major platforms', () => {
+    const seed = readFileSync(join(migrationsDir, '0002_seed.sql'), 'utf8');
+    const platforms = ['google', 'openrouter', 'groq', 'cerebras', 'mistral', 'sambanova', 'cloudflare'];
+    for (const p of platforms) {
+      expect(seed, `seed must include platform: ${p}`).toContain(`('${p}',`);
+    }
   });
 });

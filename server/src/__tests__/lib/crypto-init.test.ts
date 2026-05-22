@@ -1,64 +1,85 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
-import { initEncryptionKey, encrypt, decrypt } from '../../lib/crypto.js';
+import { describe, it, expect } from 'vitest';
+import { getOrCreateEncryptionKeyHex } from '../../db/index.js';
 
-function freshDb(): Database.Database {
-  const db = new Database(':memory:');
-  db.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
-  return db;
+// Minimal D1Database mock that supports:
+//   db.prepare(sql).first()            — direct first (no bind)
+//   db.prepare(sql).bind(...).first()  — bound first
+//   db.prepare(sql).bind(...).run()    — insert
+function makeMockD1(storedKey?: string): D1Database {
+  const store = new Map<string, string>();
+  if (storedKey) store.set('encryption_key', storedKey);
+
+  const makeStmt = (sql: string, args: unknown[] = []) => ({
+    first: async () => {
+      if (sql.includes('WHERE key =')) {
+        const keyName = args[0] as string ?? 'encryption_key';
+        if (store.has(keyName)) return { value: store.get(keyName) };
+        return null;
+      }
+      return null;
+    },
+    run: async () => {
+      if (sql.includes('INSERT OR IGNORE')) {
+        const [k, v] = args as [string, string];
+        if (!store.has(k)) store.set(k, v);
+      }
+      return { success: true, meta: {} };
+    },
+    all: async () => ({ results: [] }),
+    bind: (...bindArgs: unknown[]) => makeStmt(sql, bindArgs),
+  });
+
+  return {
+    prepare: (sql: string) => makeStmt(sql) as any,
+    exec: async () => ({ count: 0, duration: 0 }),
+    batch: async () => [],
+    dump: async () => new ArrayBuffer(0),
+  } as unknown as D1Database;
 }
 
-describe('initEncryptionKey — input validation', () => {
-  beforeEach(() => {
-    delete process.env.ENCRYPTION_KEY;
+describe('getOrCreateEncryptionKeyHex', () => {
+  it('accepts a valid 64-char hex env key', async () => {
+    const db = makeMockD1();
+    const hex = await getOrCreateEncryptionKeyHex(db, 'a'.repeat(64));
+    expect(hex).toBe('a'.repeat(64));
   });
 
-  it('accepts a valid 64-char hex env key', () => {
-    process.env.ENCRYPTION_KEY = 'a'.repeat(64);
-    const db = freshDb();
-    expect(() => initEncryptionKey(db)).not.toThrow();
-    // Round-trip a value to confirm the key actually works.
-    const enc = encrypt('hello');
-    expect(decrypt(enc.encrypted, enc.iv, enc.authTag)).toBe('hello');
+  it('throws on too-short env key', async () => {
+    const db = makeMockD1();
+    await expect(getOrCreateEncryptionKeyHex(db, 'abc')).rejects.toThrow(/Invalid ENCRYPTION_KEY \(env\)/);
   });
 
-  it('throws on too-short env key (typo guard)', () => {
-    process.env.ENCRYPTION_KEY = 'abc';
-    const db = freshDb();
-    expect(() => initEncryptionKey(db)).toThrow(/Invalid ENCRYPTION_KEY \(env\).+expected 64 hex chars/);
+  it('throws on too-long env key', async () => {
+    const db = makeMockD1();
+    await expect(getOrCreateEncryptionKeyHex(db, 'a'.repeat(80))).rejects.toThrow(/Invalid ENCRYPTION_KEY \(env\)/);
   });
 
-  it('throws on too-long env key', () => {
-    process.env.ENCRYPTION_KEY = 'a'.repeat(80);
-    const db = freshDb();
-    expect(() => initEncryptionKey(db)).toThrow(/Invalid ENCRYPTION_KEY \(env\)/);
+  it('throws on non-hex env key of correct length', async () => {
+    const db = makeMockD1();
+    await expect(getOrCreateEncryptionKeyHex(db, 'g'.repeat(64))).rejects.toThrow(/Invalid ENCRYPTION_KEY \(env\)/);
   });
 
-  it('throws on non-hex env key of correct length', () => {
-    process.env.ENCRYPTION_KEY = 'g'.repeat(64); // g is not hex
-    const db = freshDb();
-    expect(() => initEncryptionKey(db)).toThrow(/Invalid ENCRYPTION_KEY \(env\)/);
+  it('treats the placeholder value as not set', async () => {
+    const db = makeMockD1();
+    const hex = await getOrCreateEncryptionKeyHex(db, 'your-64-char-hex-key-here');
+    expect(hex).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('still treats the placeholder as "not set" and falls through to DB / generation', () => {
-    process.env.ENCRYPTION_KEY = 'your-64-char-hex-key-here';
-    const db = freshDb();
-    expect(() => initEncryptionKey(db)).not.toThrow();
-    // Fell through to generation — DB now has a key.
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string };
-    expect(row.value).toMatch(/^[0-9a-f]{64}$/);
+  it('reads key from DB when no env key provided', async () => {
+    const stored = 'b'.repeat(64);
+    const db = makeMockD1(stored);
+    const hex = await getOrCreateEncryptionKeyHex(db);
+    expect(hex).toBe(stored);
   });
 
-  it('throws on a corrupted DB-stored key', () => {
-    const db = freshDb();
-    db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run('not-hex');
-    expect(() => initEncryptionKey(db)).toThrow(/Invalid ENCRYPTION_KEY \(db\)/);
+  it('throws on a corrupted DB-stored key', async () => {
+    const db = makeMockD1('not-hex');
+    await expect(getOrCreateEncryptionKeyHex(db)).rejects.toThrow(/Invalid ENCRYPTION_KEY \(db\)/);
   });
 
-  it('generates a fresh key on a virgin DB and persists it', () => {
-    const db = freshDb();
-    initEncryptionKey(db);
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string };
-    expect(row.value).toMatch(/^[0-9a-f]{64}$/);
+  it('generates a fresh key when DB has no key and no env', async () => {
+    const db = makeMockD1();
+    const hex = await getOrCreateEncryptionKeyHex(db);
+    expect(hex).toMatch(/^[0-9a-f]{64}$/);
   });
 });

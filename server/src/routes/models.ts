@@ -1,31 +1,28 @@
-import { Router } from 'express';
-import type { Request, Response } from 'express';
-import { getDb } from '../db/index.js';
+import { Hono } from 'hono';
 import { hasProvider } from '../providers/index.js';
+import type { Env } from '../types.js';
 
-export const modelsRouter = Router();
+export const modelsRouter = new Hono<{ Bindings: Env }>();
 
-// List all models with availability info
-modelsRouter.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
-  const models = db.prepare(`
-    SELECT m.*, fc.priority, fc.enabled as fallback_enabled
-    FROM models m
-    LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
-    ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC
-  `).all() as any[];
+modelsRouter.get('/', async (c) => {
+  const db = c.env.DB;
 
-  // Count keys per platform
-  const keyCounts = db.prepare(`
-    SELECT platform, COUNT(*) as count
-    FROM api_keys
-    WHERE enabled = 1
-    GROUP BY platform
-  `).all() as { platform: string; count: number }[];
+  const { results: models } = await db
+    .prepare(`
+      SELECT m.*, fc.priority, fc.enabled as fallback_enabled
+      FROM models m
+      LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
+      ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC
+    `)
+    .all<any>();
+
+  const { results: keyCounts } = await db
+    .prepare('SELECT platform, COUNT(*) as count FROM api_keys WHERE enabled = 1 GROUP BY platform')
+    .all<{ platform: string; count: number }>();
 
   const keyCountMap = new Map(keyCounts.map(k => [k.platform, k.count]));
 
-  const result = models.map(m => ({
+  return c.json(models.map(m => ({
     id: m.id,
     platform: m.platform,
     modelId: m.model_id,
@@ -44,7 +41,5 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     fallbackEnabled: m.fallback_enabled === 1,
     hasProvider: hasProvider(m.platform),
     keyCount: keyCountMap.get(m.platform) ?? 0,
-  }));
-
-  res.json(result);
+  })));
 });

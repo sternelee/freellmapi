@@ -4,30 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply freellmapi --local",
+    "db:migrate:remote": "wrangler d1 migrations apply freellmapi --remote",
+    "db:create": "wrangler d1 create freellmapi"
   },
   "dependencies": {
     "@freellmapi/shared": "*",
-    "better-sqlite3": "^12.4.1",
-    "cors": "^2.8.5",
-    "dotenv": "^17.4.2",
-    "drizzle-orm": "^0.44.2",
-    "express": "^5.1.0",
-    "helmet": "^8.1.0",
+    "hono": "^4.12.4",
     "zod": "^3.24.4"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.2",
-    "@types/node": "^22.15.3",
-    "drizzle-kit": "^0.31.1",
-    "tsx": "^4.19.4",
+    "@cloudflare/workers-types": "^4.20260521.1",
     "typescript": "^5.8.3",
-    "vitest": "^3.1.3"
+    "vitest": "^3.1.3",
+    "wrangler": "^4.59.1"
   }
 }

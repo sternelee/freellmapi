@@ -1,36 +1,32 @@
-import { Router } from 'express';
-import type { Request, Response } from 'express';
-import { getDb } from '../db/index.js';
-import { checkKeyHealth, checkAllKeys } from '../services/health.js';
+import { Hono } from 'hono';
 import { hasProvider } from '../providers/index.js';
+import { checkKeyHealth, checkAllKeys } from '../services/health.js';
+import type { Env } from '../types.js';
 
-export const healthRouter = Router();
+export const healthRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string } }>();
 
-// Get health status for all platforms
-healthRouter.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
+healthRouter.get('/', async (c) => {
+  const db = c.env.DB;
 
-  const platforms = db.prepare(`
-    SELECT
-      platform,
-      COUNT(*) as total_keys,
-      SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) as healthy_keys,
-      SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END) as rate_limited_keys,
-      SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) as invalid_keys,
-      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_keys,
-      SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) as unknown_keys,
-      SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_keys
-    FROM api_keys
-    GROUP BY platform
-  `).all() as any[];
+  const [{ results: platforms }, { results: keys }] = await Promise.all([
+    db.prepare(`
+      SELECT
+        platform,
+        COUNT(*) as total_keys,
+        SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) as healthy_keys,
+        SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END) as rate_limited_keys,
+        SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) as invalid_keys,
+        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_keys,
+        SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) as unknown_keys,
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_keys
+      FROM api_keys GROUP BY platform
+    `).all<any>(),
+    db.prepare(
+      'SELECT id, platform, label, status, enabled, created_at, last_checked_at FROM api_keys ORDER BY platform, created_at DESC'
+    ).all<any>(),
+  ]);
 
-  const keys = db.prepare(`
-    SELECT id, platform, label, status, enabled, created_at, last_checked_at
-    FROM api_keys
-    ORDER BY platform, created_at DESC
-  `).all() as any[];
-
-  res.json({
+  return c.json({
     platforms: platforms.map(p => ({
       platform: p.platform,
       hasProvider: hasProvider(p.platform),
@@ -54,20 +50,17 @@ healthRouter.get('/', (_req: Request, res: Response) => {
   });
 });
 
-// Check a specific key
-healthRouter.post('/check/:keyId', async (req: Request, res: Response) => {
-  const keyId = parseInt(req.params.keyId as string, 10);
-  if (isNaN(keyId)) {
-    res.status(400).json({ error: { message: 'Invalid key ID' } });
-    return;
-  }
+healthRouter.post('/check/:keyId', async (c) => {
+  const keyId = parseInt(c.req.param('keyId'), 10);
+  if (isNaN(keyId)) return c.json({ error: { message: 'Invalid key ID' } }, 400);
 
-  const status = await checkKeyHealth(keyId);
-  res.json({ keyId, status });
+  const keyHex = c.get('keyHex');
+  const status = await checkKeyHealth(keyId, c.env.DB, keyHex);
+  return c.json({ keyId, status });
 });
 
-// Check all keys
-healthRouter.post('/check-all', async (_req: Request, res: Response) => {
-  await checkAllKeys();
-  res.json({ success: true });
+healthRouter.post('/check-all', async (c) => {
+  const keyHex = c.get('keyHex');
+  await checkAllKeys(c.env.DB, keyHex);
+  return c.json({ success: true });
 });

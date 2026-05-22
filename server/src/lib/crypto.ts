@@ -1,88 +1,113 @@
-import crypto from 'crypto';
-import Database from 'better-sqlite3';
+// Web Crypto API — compatible with Cloudflare Workers runtime.
+// AES-256-GCM encryption, 12-byte IV (standard for GCM).
 
-const ALGORITHM = 'aes-256-gcm';
+const ALGORITHM = 'AES-GCM';
+const KEY_BYTES = 32; // 256-bit key
 
-let cachedKey: Buffer | null = null;
+let cachedKey: CryptoKey | null = null;
+let cachedKeyHex: string | null = null;
 
-/**
- * AES-256-GCM uses a 32-byte key, hex-encoded as 64 chars.
- * A typo'd ENCRYPTION_KEY (e.g. "abc") would historically fall through
- * the placeholder check, get truncated to 1.5 bytes, and only fail at
- * the first encrypt() call with a cryptic node:crypto error. Validate
- * the length up front and fail fast with an actionable message.
- */
-const KEY_BYTES = 32;
-const KEY_HEX_LEN = KEY_BYTES * 2;
-
-function parseHexKey(value: string, source: 'env' | 'db'): Buffer {
-  if (value.length !== KEY_HEX_LEN || !/^[0-9a-fA-F]+$/.test(value)) {
-    throw new Error(
-      `Invalid ENCRYPTION_KEY (${source}): expected ${KEY_HEX_LEN} hex chars (32 bytes), got ${value.length} chars. ` +
-      `Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
-    );
-  }
-  return Buffer.from(value, 'hex');
+async function importKey(hexKey: string): Promise<CryptoKey> {
+  const raw = hexToBytes(hexKey);
+  return crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, ALGORITHM, false, ['encrypt', 'decrypt']);
 }
 
-/**
- * Initialize encryption key from env, DB, or generate a new one.
- * Must be called after DB is initialized.
- */
-export function initEncryptionKey(db: Database.Database): void {
-  // 1. Check env var
-  const envKey = process.env.ENCRYPTION_KEY;
-  if (envKey && envKey !== 'your-64-char-hex-key-here') {
-    cachedKey = parseHexKey(envKey, 'env');
-    return;
-  }
-
-  // 2. Check DB for persisted key
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string } | undefined;
-  if (row) {
-    cachedKey = parseHexKey(row.value, 'db');
-    return;
-  }
-
-  // 3. Generate and persist
-  cachedKey = crypto.randomBytes(KEY_BYTES);
-  db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
-}
-
-function getEncryptionKey(): Buffer {
-  if (!cachedKey) {
-    throw new Error('Encryption key not initialized. Call initEncryptionKey() first.');
-  }
+async function getKey(hexKey: string): Promise<CryptoKey> {
+  if (cachedKey && cachedKeyHex === hexKey) return cachedKey;
+  cachedKey = await importKey(hexKey);
+  cachedKeyHex = hexKey;
   return cachedKey;
 }
 
-export function encrypt(text: string): { encrypted: string; iv: string; authTag: string } {
-  const key = getEncryptionKey();
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+function hexToBytes(hex: string): Uint8Array {
+  const buf = new ArrayBuffer(hex.length / 2);
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
 
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const authTag = cipher.getAuthTag().toString('hex');
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function encrypt(
+  text: string,
+  keyHex: string,
+): Promise<{ encrypted: string; iv: string; authTag: string }> {
+  const key = await getKey(keyHex);
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+
+  const encoded = new TextEncoder().encode(text);
+  // AES-GCM output = ciphertext + 16-byte auth tag (appended by subtle.encrypt)
+  const raw = await crypto.subtle.encrypt({ name: ALGORITHM, iv }, key, encoded);
+
+  const rawBytes = new Uint8Array(raw);
+  const ciphertext = rawBytes.slice(0, rawBytes.length - 16);
+  const authTag = rawBytes.slice(rawBytes.length - 16);
 
   return {
-    encrypted,
-    iv: iv.toString('hex'),
-    authTag,
+    encrypted: bytesToHex(ciphertext),
+    iv: bytesToHex(iv),
+    authTag: bytesToHex(authTag),
   };
 }
 
-export function decrypt(encrypted: string, iv: string, authTag: string): string {
-  const key = getEncryptionKey();
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, Buffer.from(iv, 'hex'));
-  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+export async function decrypt(
+  encryptedHex: string,
+  ivHex: string,
+  authTagHex: string,
+  keyHex: string,
+): Promise<string> {
+  const key = await getKey(keyHex);
+  const iv = hexToBytes(ivHex);
+  const ciphertext = hexToBytes(encryptedHex);
+  const authTag = hexToBytes(authTagHex);
 
-  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  // Reconstruct the raw AES-GCM blob: ciphertext || authTag
+  const combinedBuf = new ArrayBuffer(ciphertext.length + authTag.length);
+  const combined = new Uint8Array(combinedBuf);
+  combined.set(ciphertext);
+  combined.set(authTag, ciphertext.length);
+
+  const decrypted = await crypto.subtle.decrypt({ name: ALGORITHM, iv: iv as BufferSource }, key, combinedBuf);
+  return new TextDecoder().decode(decrypted);
 }
 
 export function maskKey(key: string): string {
   if (key.length <= 8) return '****' + key.slice(-4);
   return key.slice(0, 4) + '...' + key.slice(-4);
+}
+
+// Constant-time string comparison using HMAC to prevent timing attacks.
+export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const aBytes = encoder.encode(a);
+  const bBytes = encoder.encode(b);
+
+  // Use a per-comparison random HMAC key — prevents pre-computation attacks.
+  const keyMaterial = new Uint8Array(KEY_BYTES);
+  crypto.getRandomValues(keyMaterial);
+  const hmacKey = await crypto.subtle.importKey(
+    'raw',
+    keyMaterial.buffer as ArrayBuffer,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+
+  const [hashA, hashB] = await Promise.all([
+    crypto.subtle.sign('HMAC', hmacKey, aBytes),
+    crypto.subtle.sign('HMAC', hmacKey, bBytes),
+  ]);
+
+  const a32 = new Uint8Array(hashA);
+  const b32 = new Uint8Array(hashB);
+  let diff = 0;
+  for (let i = 0; i < a32.length; i++) diff |= a32[i] ^ b32[i];
+  return diff === 0;
 }

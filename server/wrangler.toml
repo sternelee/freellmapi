@@ -1,0 +1,38 @@
+name = "freellmapi"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# Serve the React SPA alongside the Worker
+[assets]
+directory = "../client/dist"
+html_handling = "auto-trailing-slash"
+not_found_handling = "single-page-application"
+
+# D1 SQLite database
+[[d1_databases]]
+binding = "DB"
+database_name = "freellmapi"
+database_id = "placeholder-replace-after-wrangler-d1-create"
+migrations_dir = "src/db/migrations"
+
+# KV namespace for sticky sessions
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "placeholder-replace-after-wrangler-kv-create"
+
+# Durable Object for rate-limit state
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimiterDO"]
+
+# Cron trigger: health check every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Secrets — set via: wrangler secret put ENCRYPTION_KEY
+# ENCRYPTION_KEY: 64-char hex string (32 bytes). Generate with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
