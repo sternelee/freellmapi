@@ -2,12 +2,72 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import KeysPage from '@/pages/KeysPage'
 import PlaygroundPage from '@/pages/PlaygroundPage'
 import FallbackPage from '@/pages/FallbackPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
 
 const queryClient = new QueryClient()
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const [adminKey, setAdminKey] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('freellmapi_admin_key') : null
+  )
+  const [input, setInput] = useState('')
+  const [error, setError] = useState('')
+
+  if (adminKey) return <>{children}</>
+
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setError('')
+    const key = input.trim()
+    if (!key) return
+
+    // Verify by hitting a protected endpoint
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/settings/api-key`, {
+        headers: { Authorization: `Bearer ${key}` },
+      })
+      if (res.ok) {
+        localStorage.setItem('freellmapi_admin_key', key)
+        setAdminKey(key)
+      } else {
+        setError('Invalid API key')
+      }
+    } catch {
+      setError('Request failed — check your connection')
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <div className="w-full max-w-sm space-y-4">
+        <div className="text-center space-y-1">
+          <h1 className="text-lg font-semibold tracking-tight">FreeLLMAPI</h1>
+          <p className="text-sm text-muted-foreground">Enter your unified API key to access the dashboard.</p>
+        </div>
+        <form onSubmit={submit} className="space-y-3">
+          <Input
+            type="password"
+            placeholder="sk-free-..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            className="font-mono text-xs"
+          />
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          <Button type="submit" className="w-full" size="sm">
+            Access dashboard
+          </Button>
+        </form>
+        <p className="text-[11px] text-muted-foreground text-center">
+          The key is stored in your browser's localStorage and sent as a Bearer token with every request.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
   return (
@@ -70,33 +130,35 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter basename={import.meta.env.BASE_URL}>
-        <div className="min-h-screen bg-background">
-          <header className="sticky top-0 z-40 bg-background/80 backdrop-blur border-b">
-            <div className="max-w-6xl mx-auto px-6 flex items-center">
-              <Brand />
-              <nav className="flex items-center gap-6 ml-10">
-                <NavItem to="/playground">Playground</NavItem>
-                <NavItem to="/keys">Keys</NavItem>
-                <NavItem to="/fallback">Fallback</NavItem>
-                <NavItem to="/analytics">Analytics</NavItem>
-              </nav>
-              <div className="ml-auto py-2">
-                <DarkModeToggle />
+        <AuthGate>
+          <div className="min-h-screen bg-background">
+            <header className="sticky top-0 z-40 bg-background/80 backdrop-blur border-b">
+              <div className="max-w-6xl mx-auto px-6 flex items-center">
+                <Brand />
+                <nav className="flex items-center gap-6 ml-10">
+                  <NavItem to="/playground">Playground</NavItem>
+                  <NavItem to="/keys">Keys</NavItem>
+                  <NavItem to="/fallback">Fallback</NavItem>
+                  <NavItem to="/analytics">Analytics</NavItem>
+                </nav>
+                <div className="ml-auto py-2">
+                  <DarkModeToggle />
+                </div>
               </div>
-            </div>
-          </header>
-          <main className="max-w-6xl mx-auto px-6 py-8">
-            <Routes>
-              <Route path="/" element={<Navigate to="/playground" replace />} />
-              <Route path="/playground" element={<PlaygroundPage />} />
-              <Route path="/keys" element={<KeysPage />} />
-              <Route path="/fallback" element={<FallbackPage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
-              <Route path="/test" element={<Navigate to="/playground" replace />} />
-              <Route path="/health" element={<Navigate to="/keys" replace />} />
-            </Routes>
-          </main>
-        </div>
+            </header>
+            <main className="max-w-6xl mx-auto px-6 py-8">
+              <Routes>
+                <Route path="/" element={<Navigate to="/playground" replace />} />
+                <Route path="/playground" element={<PlaygroundPage />} />
+                <Route path="/keys" element={<KeysPage />} />
+                <Route path="/fallback" element={<FallbackPage />} />
+                <Route path="/analytics" element={<AnalyticsPage />} />
+                <Route path="/test" element={<Navigate to="/playground" replace />} />
+                <Route path="/health" element={<Navigate to="/keys" replace />} />
+              </Routes>
+            </main>
+          </div>
+        </AuthGate>
       </BrowserRouter>
     </QueryClientProvider>
   )

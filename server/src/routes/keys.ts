@@ -7,8 +7,11 @@ export const keysRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string 
 
 const createKeySchema = z.object({
   platform: z.string().min(1),
-  apiKey: z.string().min(1),
+  apiKey: z.string().min(1).optional(),
+  key: z.string().min(1).optional(),
   label: z.string().optional(),
+}).refine((data) => data.apiKey || data.key, {
+  message: 'apiKey or key is required',
 });
 
 // List all API keys (masked)
@@ -40,7 +43,8 @@ keysRouter.post('/', async (c) => {
     return c.json({ error: { message: parsed.error.issues.map((e: { message: string }) => e.message).join(', ') } }, 400);
   }
 
-  const { platform, apiKey, label = '' } = parsed.data;
+  const { platform, apiKey: apiKeyRaw, key, label = '' } = parsed.data;
+  const apiKey = apiKeyRaw || key!;
   const keyHex = c.get('keyHex');
   const { encrypted, iv, authTag } = await encrypt(apiKey, keyHex);
 
