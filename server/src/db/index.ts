@@ -83,7 +83,7 @@ export async function getUnifiedApiKey(db: D1DB): Promise<string> {
   const hex = Array.from(bytes)
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
-  const key = `freellmapi-${hex}`;
+  const key = `sk-free-${hex}`;
   await db
     .prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('unified_api_key', ?)")
     .bind(key)
@@ -98,7 +98,7 @@ export async function regenerateUnifiedKey(db: D1DB): Promise<string> {
   const hex = Array.from(bytes)
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
-  const key = `freellmapi-${hex}`;
+  const key = `sk-free-${hex}`;
   await db
     .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('unified_api_key', ?)")
     .bind(key)
