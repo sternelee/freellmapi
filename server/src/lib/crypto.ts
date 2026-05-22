@@ -19,7 +19,7 @@ async function getKey(hexKey: string): Promise<CryptoKey> {
   return cachedKey;
 }
 
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const buf = new ArrayBuffer(hex.length / 2);
   const bytes = new Uint8Array(buf);
   for (let i = 0; i < bytes.length; i++) {

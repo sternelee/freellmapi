@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { keysRouter } from './routes/keys.js';
@@ -35,11 +35,13 @@ export function createApp() {
     await next();
   });
 
+  type AppEnv = { Bindings: Env; Variables: { keyHex: string } };
+
   // ── Admin auth middleware ─────────────────────────────────────────────────
   // Applied before the respective route mounts (Hono evaluates middleware in
   // registration order — middleware must come before route handlers).
-  const requireAuth = async (c: any, next: any) => {
-    const token = (c.req.header('authorization') as string | undefined)?.replace(/^Bearer\s+/i, '');
+  const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+    const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
     const unifiedKey = await getUnifiedApiKey(c.env.DB);
     if (!token || !(await timingSafeEqual(token, unifiedKey))) {
       return c.json({ error: { message: 'Unauthorized', type: 'authentication_error' } }, 401);
@@ -51,13 +53,13 @@ export function createApp() {
   app.use('/api/keys/*', requireAuth);
   app.use('/api/settings/*', requireAuth);
   app.use('/api/health/check*', requireAuth);
-  app.use('/api/fallback', async (c, next) => {
-    // Only protect write methods on the fallback config
+  const requireWriteAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
     if (c.req.method === 'PUT' || c.req.method === 'POST') {
       return requireAuth(c, next);
     }
     await next();
-  });
+  };
+  app.use('/api/fallback', requireWriteAuth);
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.route('/api/keys', keysRouter);

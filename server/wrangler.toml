@@ -34,5 +34,6 @@ new_classes = ["RateLimiterDO"]
 crons = ["*/5 * * * *"]
 
 # Secrets — set via: wrangler secret put ENCRYPTION_KEY
-# ENCRYPTION_KEY: 64-char hex string (32 bytes). Generate with:
-#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# ENCRYPTION_KEY: 64-char hex string (32 bytes). Generate with (any method):
+#   openssl rand -hex 32
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
