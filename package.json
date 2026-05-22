@@ -1,16 +1,12 @@
 {
   "name": "freellmapi",
   "private": true,
-  "workspaces": [
-    "shared",
-    "server",
-    "client"
-  ],
+  "packageManager": "pnpm@11.2.2",
   "scripts": {
-    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
-    "test": "npm run test -w server && npm run test -w client",
-    "build": "npm run build -w server && npm run build -w client",
-    "build:server": "npm run build -w server"
+    "dev": "concurrently \"pnpm --filter @freellmapi/server dev\" \"pnpm --filter @freellmapi/client dev\"",
+    "test": "pnpm --filter @freellmapi/server test && pnpm --filter @freellmapi/client test",
+    "build": "pnpm --filter @freellmapi/server build && pnpm --filter @freellmapi/client build",
+    "build:server": "pnpm --filter @freellmapi/server build"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
