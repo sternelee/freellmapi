@@ -14,7 +14,7 @@
     "db:create": "wrangler d1 create freellmapi"
   },
   "dependencies": {
-    "@freellmapi/shared": "*",
+    "@freellmapi/shared": "workspace:*",
     "hono": "^4.12.21",
     "zod": "^4.4.3"
   },
