@@ -12,13 +12,13 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "freellmapi"
-database_id = "placeholder-replace-after-wrangler-d1-create"
+database_id = "894308b8-32ab-40ef-b1f6-7c975684454a"
 migrations_dir = "src/db/migrations"
 
 # KV namespace for sticky sessions
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "placeholder-replace-after-wrangler-kv-create"
+id = "66613f82f8894980bf79f344efd3e3d8"
 
 # Durable Object for rate-limit state
 [[durable_objects.bindings]]
