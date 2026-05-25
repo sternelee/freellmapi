@@ -29,7 +29,7 @@ export function createApp() {
 
   // ── Encryption key ────────────────────────────────────────────────────────
   // Resolved once per API request and stored in context variables.
-  app.use('/api/*', async (c, next) => {
+  app.use('*', async (c, next) => {
     const hex = await getOrCreateEncryptionKeyHex(c.env.DB, c.env.ENCRYPTION_KEY);
     c.set('keyHex', hex);
     await next();

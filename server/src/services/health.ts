@@ -66,7 +66,11 @@ export async function checkAllKeys(db: D1DB, keyHex: string): Promise<void> {
     .prepare('SELECT id, platform FROM api_keys WHERE enabled = 1')
     .all<{ id: number; platform: string }>();
 
-  console.log(`[Health] Checking ${keys.length} keys...`);
+  console.log(`[Health] Checking ${keys?.length ?? 0} keys...`);
+  if (!keys || keys.length === 0) {
+    console.log('[Health] No enabled keys to check.');
+    return;
+  }
   for (const key of keys) {
     await checkKeyHealth(key.id, db, keyHex);
   }

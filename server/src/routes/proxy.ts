@@ -259,6 +259,7 @@ proxyRouter.post('/chat/completions', async (c) => {
     try {
       route = await routeRequest(db, c.env, keyHex, estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
     } catch (err: any) {
+      console.error('[Proxy] routeRequest error:', err);
       const status = lastError ? 429 : (err.status ?? 503);
       const message = lastError
         ? `All models rate-limited. Last error: ${lastError.message}`
