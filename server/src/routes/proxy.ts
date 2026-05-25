@@ -94,7 +94,14 @@ function isRetryableError(err: any): boolean {
     || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
     || msg.includes('econnrefused') || msg.includes('econnreset')
     || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error');
+    || msg.includes('500') || msg.includes('internal server error')
+    // 413: this model's payload limit is too small for the request, but another
+    // provider in the fallback chain may have a larger limit. Same reasoning as 503.
+    || msg.includes('413') || msg.includes('payload too large') || msg.includes('request body too large')
+    || msg.includes('request entity too large') || msg.includes('content too large')
+    // 404: model deprecated/removed upstream (e.g. OpenRouter's "no endpoints found"
+    // for a model that's been pulled). Rotate to the next model in the chain.
+    || msg.includes('404') || msg.includes('not found') || msg.includes('no endpoints found');
 }
 
 /** Stable session key: hash of the first user message using Web Crypto SHA-1. */

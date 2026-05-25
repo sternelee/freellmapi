@@ -87,6 +87,11 @@ export async function routeRequest(
   const { results: fallbackChain } = await db
     .prepare('SELECT fc.model_db_id, fc.priority, fc.enabled FROM fallback_config fc ORDER BY fc.priority ASC')
     .all<FallbackRow>();
+  if (!fallbackChain) {
+    const err = new Error('Database unavailable: fallback_config query returned no results') as any;
+    err.status = 503;
+    throw err;
+  }
 
   // Fetch all penalty scores from the DO
   const penalties = await doPost<Array<{ modelDbId: number; penalty: number }>>(stub, '/get-all-penalties', {});
@@ -124,7 +129,7 @@ export async function routeRequest(
       .bind(model.platform)
       .all<KeyRow>();
 
-    if (keys.length === 0) continue;
+    if (!keys || keys.length === 0) continue;
 
     const limits = {
       rpm: model.rpm_limit,
