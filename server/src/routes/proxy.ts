@@ -9,11 +9,22 @@ import {
 import { getRateLimiterStub, doPost, doPostNoReply } from '../services/doClient.js';
 import { timingSafeEqual } from '../lib/crypto.js';
 import { getUnifiedApiKey } from '../db/index.js';
+import { contentToString } from '../lib/content.js';
 import type { Env } from '../types.js';
 
 export const proxyRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string } }>();
 
 const MAX_RETRIES = 20;
+
+// Virtual "auto" model. Clients like Hermes require a non-empty `model` field
+// on every request, but freellmapi's whole point is to pick the model itself.
+// Requesting this id means "let the router decide" — identical to omitting
+// `model` entirely.
+const AUTO_MODEL_ID = 'auto';
+
+function isAutoModel(modelId: string | undefined): boolean {
+  return modelId === AUTO_MODEL_ID;
+}
 
 const toolCallSchema = z.object({
   id: z.string().min(1),
@@ -25,32 +36,46 @@ const toolCallSchema = z.object({
   thought_signature: z.string().optional(),
 });
 
+// OpenAI multimodal envelope. Clients like opencode / continue.dev send
+// content as an array of typed blocks even when only text is present. We
+// accept the envelope on the wire and flatten to string for providers that
+// don't support arrays (Cohere, Cloudflare). Non-text blocks pass z validation
+// but get dropped by contentToString — vision/audio still isn't supported.
+const contentBlockSchema = z.object({ type: z.string() }).passthrough();
+const contentSchema = z.union([z.string(), z.array(contentBlockSchema)]);
+
+function hasNonEmptyContent(content: unknown): boolean {
+  if (typeof content === 'string') return content.length > 0;
+  if (Array.isArray(content)) return content.length > 0;
+  return false;
+}
+
 const systemMessageSchema = z.object({
   role: z.literal('system'),
-  content: z.string(),
+  content: contentSchema,
   name: z.string().optional(),
 });
 
 const userMessageSchema = z.object({
   role: z.literal('user'),
-  content: z.string(),
+  content: contentSchema,
   name: z.string().optional(),
 });
 
 const assistantMessageSchema = z.object({
   role: z.literal('assistant'),
-  content: z.string().nullable().optional(),
+  content: z.union([contentSchema, z.null()]).optional(),
   name: z.string().optional(),
   tool_calls: z.array(toolCallSchema).optional(),
-}).refine(msg => {
-  const hasContent = typeof msg.content === 'string' && msg.content.length > 0;
+}).refine((msg) => {
+  const hasContent = hasNonEmptyContent(msg.content);
   const hasToolCalls = (msg.tool_calls?.length ?? 0) > 0;
   return hasContent || hasToolCalls;
 }, { message: 'assistant messages must include non-empty content or tool_calls' });
 
 const toolMessageSchema = z.object({
   role: z.literal('tool'),
-  content: z.string(),
+  content: contentSchema,
   tool_call_id: z.string().min(1),
   name: z.string().optional(),
 });
@@ -160,14 +185,24 @@ proxyRouter.get('/models', async (c) => {
 
   return c.json({
     object: 'list',
-    data: models.map(m => ({
-      id: m.model_id,
-      object: 'model',
-      created: 0,
-      owned_by: m.platform,
-      name: m.display_name,
-      context_window: m.context_window,
-    })),
+    data: [
+      {
+        id: AUTO_MODEL_ID,
+        object: 'model',
+        created: 0,
+        owned_by: 'freellmapi',
+        name: 'Auto (router picks the best available model)',
+        context_window: null,
+      },
+      ...models.map(m => ({
+        id: m.model_id,
+        object: 'model',
+        created: 0,
+        owned_by: m.platform,
+        name: m.display_name,
+        context_window: m.context_window,
+      })),
+    ],
   });
 });
 
@@ -222,26 +257,64 @@ proxyRouter.post('/chat/completions', async (c) => {
     return { role: m.role, content: m.content, ...(m.name ? { name: m.name } : {}) };
   });
 
-  const estimatedInputTokens = messages.reduce((sum, m) =>
-    typeof m.content === 'string' ? sum + Math.ceil(m.content.length / 4) : sum, 0);
+  // Token estimation is intentionally a heuristic (~4 chars per token).
+  const estimatedInputTokens = messages.reduce((sum, m) => {
+    const text = contentToString(m.content);
+    return sum + Math.ceil(text.length / 4);
+  }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
-  // Resolve preferred model
+  // Resolve preferred model.
+  // Explicit `model` field pins routing. If the catalog has no enabled row
+  // matching the requested id, return 400 — silently auto-routing to a
+  // different model would be surprising to OpenAI-compatible clients.
+  // Sticky-session is the fallback when no `model` field was sent at all.
   let preferredModel: number | undefined;
-  if (requestedModel) {
-    const enabled = await db
-      .prepare('SELECT id FROM models WHERE model_id = ? AND enabled = 1')
-      .bind(requestedModel).first<{ id: number }>();
+  let pinModel = false;
+  if (isAutoModel(requestedModel)) {
+    // Explicit "auto" → behave exactly like an omitted model field.
+    preferredModel = await getStickyModel(c.env, messages);
+  } else if (requestedModel) {
+    // Try exact match first
+    let enabled = await db
+      .prepare('SELECT id, platform, model_id FROM models WHERE model_id = ? AND enabled = 1')
+      .bind(requestedModel).first<{ id: number; platform: string; model_id: string }>();
+
+    // Try provider::model-id format (e.g. "groq::llama-3.3-70b-versatile")
+    if (!enabled) {
+      const sepIdx = requestedModel.indexOf('::');
+      if (sepIdx > 0) {
+        const platform = requestedModel.slice(0, sepIdx);
+        const modelId = requestedModel.slice(sepIdx + 2);
+        enabled = await db
+          .prepare('SELECT id, platform, model_id FROM models WHERE platform = ? AND model_id = ? AND enabled = 1')
+          .bind(platform, modelId).first<{ id: number; platform: string; model_id: string }>();
+      }
+    }
+
+
     if (enabled) {
       preferredModel = enabled.id;
+      pinModel = true;
     } else {
-      const disabled = await db
+      // Check if disabled (exact match) or not in catalog
+      let disabled = await db
         .prepare('SELECT id FROM models WHERE model_id = ?')
         .bind(requestedModel).first<{ id: number }>();
+      if (!disabled) {
+        const sepIdx = requestedModel.indexOf('::');
+        if (sepIdx > 0) {
+          const platform = requestedModel.slice(0, sepIdx);
+          const modelId = requestedModel.slice(sepIdx + 2);
+          disabled = await db
+            .prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?')
+            .bind(platform, modelId).first<{ id: number }>();
+        }
+      }
       const reason = disabled ? 'is disabled' : 'is not in the catalog';
       return c.json({
         error: {
-          message: `Model '${requestedModel}' ${reason}. Omit the 'model' field to auto-route.`,
+          message: `Model '${requestedModel}' ${reason}. Use '${AUTO_MODEL_ID}' (or omit the 'model' field) to auto-route, or call /v1/models for the available list.`,
           type: 'invalid_request_error',
           code: 'model_not_found',
         },
@@ -257,7 +330,7 @@ proxyRouter.post('/chat/completions', async (c) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = await routeRequest(db, c.env, keyHex, estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      route = await routeRequest(db, c.env, keyHex, estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, pinModel);
     } catch (err: any) {
       console.error('[Proxy] routeRequest error:', err);
       const status = lastError ? 429 : (err.status ?? 503);

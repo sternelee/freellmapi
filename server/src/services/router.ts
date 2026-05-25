@@ -80,6 +80,7 @@ export async function routeRequest(
   estimatedTokens = 1000,
   skipKeys?: Set<string>,
   preferredModelDbId?: number,
+  pinModel = false,
 ): Promise<RouteResult> {
   const stub = getRateLimiterStub(env);
 
@@ -109,6 +110,10 @@ export async function routeRequest(
     if (idx > 0) {
       const [preferred] = sortedChain.splice(idx, 1);
       sortedChain.unshift(preferred);
+    } else if (idx === -1 && pinModel) {
+      const err = new Error('Pinned model is not in the fallback chain or is disabled') as any;
+      err.status = 400;
+      throw err;
     }
   }
 
@@ -181,6 +186,12 @@ export async function routeRequest(
 
     // No available key for this model — update round-robin anyway
     await doPostNoReply(stub, '/set-round-robin', { key: rrKey, index: idx });
+
+    if (pinModel && entry.model_db_id === preferredModelDbId) {
+      const err = new Error('Pinned model is currently unavailable (rate-limited or on cooldown). Try again later or use a different model.') as any;
+      err.status = 429;
+      throw err;
+    }
   }
 
   const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;
