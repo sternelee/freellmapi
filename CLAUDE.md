@@ -153,3 +153,13 @@ Cloudflare Workers. Requires:
 - Secret `ENCRYPTION_KEY` (set via `wrangler secret put ENCRYPTION_KEY`)
 
 Assets served from `client/dist` via Workers Sites (`[assets]` in `wrangler.jsonc`).
+## Upstream Merge Policy
+
+When merging upstream (`upstream/main`), **always preserve the Cloudflare Workers architecture**:
+- Hono (not Express)
+- D1 async database API (not better-sqlite3 / synchronous SQLite)
+- Durable Objects for rate-limit state (not in-memory Node.js modules)
+- Web Crypto API for encryption (not Node.js `crypto` module)
+- pnpm workspace scripts (not npm workspace syntax)
+
+Accept upstream functional improvements (bug fixes, retry logic, new endpoints, schema additions), but reject any architecture migration toward Node.js/Express/SQLite.
