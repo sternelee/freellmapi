@@ -7,7 +7,7 @@ export const keysRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string 
 
 const PLATFORMS = [
   'google', 'groq', 'cerebras', 'sambanova', 'nvidia', 'mistral',
-  'openrouter', 'github', 'cohere', 'cloudflare', 'zhipu',
+  'openrouter', 'github', 'cohere', 'cloudflare', 'zhipu', 'zai',
   'ollama', 'kilo', 'pollinations', 'llm7', 'huggingface',
 ] as const;
 

@@ -82,6 +82,13 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
 }));
 
+// Z.ai (Zhipu international) — OpenAI-compatible, same models as Zhipu but hosted overseas
+register(new OpenAICompatProvider({
+  platform: 'zai',
+  name: 'Z.ai',
+  baseUrl: 'https://api.z.ai/api/paas/v4',
+}));
+
 // Hugging Face Inference Providers router — re-added in V13. The V4 removal
 // reason ("tool-call format issues") was the legacy serverless route that
 // emitted tool calls as text; the new router.huggingface.co meta-router
