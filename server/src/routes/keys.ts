@@ -9,6 +9,7 @@ const PLATFORMS = [
   'google', 'groq', 'cerebras', 'sambanova', 'nvidia', 'mistral',
   'openrouter', 'github', 'cohere', 'cloudflare', 'zhipu', 'zai',
   'ollama', 'kilo', 'pollinations', 'llm7', 'huggingface',
+  'zenmux',
 ] as const;
 
 const createKeySchema = z.object({

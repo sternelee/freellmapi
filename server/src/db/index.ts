@@ -136,6 +136,10 @@ export async function seedModels(db: D1DB): Promise<void> {
     // Hugging Face — free Inference credits are ~$0.10/mo → budget closer to 1-3M on a 70B model
     ['huggingface', 'accounts/fireworks/models/llama-v3p3-70b-instruct', 'Llama 3.3 70B (HF)', 14, 11, 'Medium', null, null, null, null, '~1-3M', 131072],
     // New providers — recurring monthly free tiers, no card required
+    // Zenmux — free OpenAI-compatible aggregator (no card required)
+    ['zenmux', 'google/gemini-3.5-flash-free', 'Gemini 3.5 Flash Free', 4, 5, 'Large', 10, null, null, null, '~1M', 1000000],
+    ['zenmux', 'z-ai/glm-4.7-flash-free', 'GLM-4.7 Flash Free', 5, 4, 'Large', 10, null, null, null, '~1M', 131072],
+    ['zenmux', 'z-ai/glm-4.6v-flash-free', 'GLM-4.6V Flash Free', 6, 4, 'Large', 10, null, null, null, '~1M', 131072],
     ['zhipu', 'glm-4.5-flash', 'GLM-4.5 Flash', 5, 4, 'Large', null, null, null, 1000000, '~30M', 131072],
     ['zai', 'glm-4.5-flash', 'GLM-4.5 Flash (Z.ai)', 5, 4, 'Large', null, null, null, 1000000, '~30M', 131072],
     ['moonshot', 'kimi-latest', 'Kimi Latest', 4, 8, 'Large', 60, null, null, 500000, '~15M', 200000],

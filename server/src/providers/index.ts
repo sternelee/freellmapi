@@ -99,6 +99,14 @@ register(new OpenAICompatProvider({
   name: 'HuggingFace Router',
   baseUrl: 'https://router.huggingface.co/v1',
 }));
+// Zenmux — OpenAI-compatible aggregator. Free-tier with 3 models:
+// google/gemini-3.5-flash-free, z-ai/glm-4.7-flash-free, z-ai/glm-4.6v-flash-free.
+register(new OpenAICompatProvider({
+  platform: 'zenmux',
+  name: 'Zenmux',
+  baseUrl: 'https://zenmux.ai/api/v1',
+}));
+// Moonshot direct integration was dropped in V4
 
 // Moonshot direct integration was dropped in V4 (paid-only); MiniMax direct
 // was dropped in V4 (superseded by the OpenRouter route).

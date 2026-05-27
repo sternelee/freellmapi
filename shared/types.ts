@@ -22,7 +22,8 @@ export type Platform =
   | 'kilo'
   | 'pollinations'
   | 'llm7'
-  | 'huggingface';
+  | 'huggingface'
+  | 'zenmux';
 
 export interface Model {
   id: number;
