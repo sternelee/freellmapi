@@ -5,6 +5,12 @@ import type { Env } from '../types.js';
 
 export const keysRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string } }>();
 
+const PLATFORMS = [
+  'google', 'groq', 'cerebras', 'sambanova', 'nvidia', 'mistral',
+  'openrouter', 'github', 'cohere', 'cloudflare', 'zhipu',
+  'ollama', 'kilo', 'pollinations', 'llm7', 'huggingface',
+] as const;
+
 const createKeySchema = z.object({
   platform: z.string().min(1),
   apiKey: z.string().min(1).optional(),
@@ -63,6 +69,26 @@ keysRouter.delete('/:id', async (c) => {
 
   await c.env.DB.prepare('DELETE FROM api_keys WHERE id = ?').bind(id).run();
   return c.json({ success: true });
+});
+
+// Toggle all keys for a platform
+keysRouter.patch('/platform/:platform', async (c) => {
+  const platform = c.req.param('platform');
+  if (!(PLATFORMS as readonly string[]).includes(platform)) {
+    return c.json({ error: { message: `Invalid platform '${platform}'` } }, 400);
+  }
+
+  const body = await c.req.json().catch(() => ({})) as { enabled?: boolean };
+  if (typeof body.enabled !== 'boolean') {
+    return c.json({ error: { message: 'enabled must be a boolean' } }, 400);
+  }
+
+  const result = await c.env.DB
+    .prepare('UPDATE api_keys SET enabled = ? WHERE platform = ?')
+    .bind(body.enabled ? 1 : 0, platform)
+    .run();
+
+  return c.json({ success: true, enabled: body.enabled, updatedKeys: result.meta.changes ?? 0 });
 });
 
 // Enable/disable a key

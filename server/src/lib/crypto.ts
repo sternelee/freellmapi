@@ -3,11 +3,29 @@
 
 const ALGORITHM = 'AES-GCM';
 const KEY_BYTES = 32; // 256-bit key
+const KEY_HEX_LEN = KEY_BYTES * 2; // 64 hex chars
+const PLACEHOLDER_KEY = 'your-64-char-hex-key-here';
 
 let cachedKey: CryptoKey | null = null;
 let cachedKeyHex: string | null = null;
 
+function validateHexKey(value: string, source: string): void {
+  if (value.length !== KEY_HEX_LEN || !/^[0-9a-fA-F]+$/.test(value)) {
+    throw new Error(
+      `Invalid ENCRYPTION_KEY (${source}): expected ${KEY_HEX_LEN} hex chars (32 bytes), got ${value.length} chars. ` +
+      `Generate one with: openssl rand -hex 32`,
+    );
+  }
+}
+
 async function importKey(hexKey: string): Promise<CryptoKey> {
+  if (hexKey === PLACEHOLDER_KEY) {
+    throw new Error(
+      'ENCRYPTION_KEY is set to the placeholder value. ' +
+      `Set a real ${KEY_HEX_LEN}-char hex key, or remove the env var to allow DB fallback.`,
+    );
+  }
+  validateHexKey(hexKey, 'env');
   const raw = hexToBytes(hexKey);
   return crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, ALGORITHM, false, ['encrypt', 'decrypt']);
 }

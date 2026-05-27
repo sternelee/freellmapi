@@ -129,8 +129,9 @@ export async function routeRequest(
     const provider = getProvider(model.platform as any);
     if (!provider) continue;
 
+    // Get enabled keys that have not already failed validation or decryption.
     const { results: keys } = await db
-      .prepare("SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != 'invalid'")
+      .prepare("SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')")
       .bind(model.platform)
       .all<KeyRow>();
 
@@ -168,10 +169,19 @@ export async function routeRequest(
       });
       if (!canUse) continue;
 
+      let decryptedKey: string;
+      try {
+        decryptedKey = await decrypt(key.encrypted_key, key.iv, key.auth_tag, keyHex);
+      } catch {
+        await db
+          .prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
+          .bind(key.id)
+          .run();
+        continue;
+      }
+
       // Update round-robin index
       await doPostNoReply(stub, '/set-round-robin', { key: rrKey, index: idx });
-
-      const decryptedKey = await decrypt(key.encrypted_key, key.iv, key.auth_tag, keyHex);
 
       return {
         provider,

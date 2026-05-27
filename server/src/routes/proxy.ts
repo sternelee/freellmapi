@@ -1,18 +1,30 @@
-import { Hono } from 'hono';
-import { stream } from 'hono/streaming';
-import { z } from 'zod';
-import type { ChatMessage } from '@freellmapi/shared/types.js';
+import { Hono } from "hono";
+import { stream } from "hono/streaming";
+import { z } from "zod";
+import type { ChatMessage } from "@freellmapi/shared/types.js";
 import {
-  routeRequest, recordRateLimitHit, recordSuccess,
-  recordRequest, recordTokens, setCooldown, type RouteResult,
-} from '../services/router.js';
-import { getRateLimiterStub, doPost, doPostNoReply } from '../services/doClient.js';
-import { timingSafeEqual } from '../lib/crypto.js';
-import { getUnifiedApiKey } from '../db/index.js';
-import { contentToString } from '../lib/content.js';
-import type { Env } from '../types.js';
+  routeRequest,
+  recordRateLimitHit,
+  recordSuccess,
+  recordRequest,
+  recordTokens,
+  setCooldown,
+  type RouteResult,
+} from "../services/router.js";
+import {
+  getRateLimiterStub,
+  doPost,
+  doPostNoReply,
+} from "../services/doClient.js";
+import { timingSafeEqual } from "../lib/crypto.js";
+import { getUnifiedApiKey } from "../db/index.js";
+import { contentToString } from "../lib/content.js";
+import type { Env } from "../types.js";
 
-export const proxyRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string } }>();
+export const proxyRouter = new Hono<{
+  Bindings: Env;
+  Variables: { keyHex: string };
+}>();
 
 const MAX_RETRIES = 20;
 
@@ -20,7 +32,7 @@ const MAX_RETRIES = 20;
 // on every request, but freellmapi's whole point is to pick the model itself.
 // Requesting this id means "let the router decide" — identical to omitting
 // `model` entirely.
-const AUTO_MODEL_ID = 'auto';
+const AUTO_MODEL_ID = "auto";
 
 function isAutoModel(modelId: string | undefined): boolean {
   return modelId === AUTO_MODEL_ID;
@@ -28,7 +40,7 @@ function isAutoModel(modelId: string | undefined): boolean {
 
 const toolCallSchema = z.object({
   id: z.string().min(1),
-  type: z.literal('function'),
+  type: z.literal("function"),
   function: z.object({
     name: z.string().min(1),
     arguments: z.string(),
@@ -45,43 +57,51 @@ const contentBlockSchema = z.object({ type: z.string() }).passthrough();
 const contentSchema = z.union([z.string(), z.array(contentBlockSchema)]);
 
 function hasNonEmptyContent(content: unknown): boolean {
-  if (typeof content === 'string') return content.length > 0;
+  if (typeof content === "string") return content.length > 0;
   if (Array.isArray(content)) return content.length > 0;
   return false;
 }
 
 const systemMessageSchema = z.object({
-  role: z.literal('system'),
+  role: z.literal("system"),
   content: contentSchema,
   name: z.string().optional(),
 });
 
 const userMessageSchema = z.object({
-  role: z.literal('user'),
+  role: z.literal("user"),
   content: contentSchema,
   name: z.string().optional(),
 });
 
-const assistantMessageSchema = z.object({
-  role: z.literal('assistant'),
-  content: z.union([contentSchema, z.null()]).optional(),
-  name: z.string().optional(),
-  tool_calls: z.array(toolCallSchema).optional(),
-}).refine((msg) => {
-  const hasContent = hasNonEmptyContent(msg.content);
-  const hasToolCalls = (msg.tool_calls?.length ?? 0) > 0;
-  return hasContent || hasToolCalls;
-}, { message: 'assistant messages must include non-empty content or tool_calls' });
+const assistantMessageSchema = z
+  .object({
+    role: z.literal("assistant"),
+    content: z.union([contentSchema, z.null()]).optional(),
+    name: z.string().optional(),
+    tool_calls: z.array(toolCallSchema).optional(),
+  })
+  .refine(
+    (msg) => {
+      const hasContent = hasNonEmptyContent(msg.content);
+      const hasToolCalls = (msg.tool_calls?.length ?? 0) > 0;
+      return hasContent || hasToolCalls;
+    },
+    {
+      message:
+        "assistant messages must include non-empty content or tool_calls",
+    },
+  );
 
 const toolMessageSchema = z.object({
-  role: z.literal('tool'),
+  role: z.literal("tool"),
   content: contentSchema,
   tool_call_id: z.string().min(1),
   name: z.string().optional(),
 });
 
 const toolDefinitionSchema = z.object({
-  type: z.literal('function'),
+  type: z.literal("function"),
   function: z.object({
     name: z.string().min(1),
     description: z.string().optional(),
@@ -91,17 +111,24 @@ const toolDefinitionSchema = z.object({
 });
 
 const toolChoiceSchema = z.union([
-  z.enum(['none', 'auto', 'required']),
+  z.enum(["none", "auto", "required"]),
   z.object({
-    type: z.literal('function'),
+    type: z.literal("function"),
     function: z.object({ name: z.string().min(1) }),
   }),
 ]);
 
 const chatCompletionSchema = z.object({
-  messages: z.array(z.union([
-    systemMessageSchema, userMessageSchema, assistantMessageSchema, toolMessageSchema,
-  ])).min(1),
+  messages: z
+    .array(
+      z.union([
+        systemMessageSchema,
+        userMessageSchema,
+        assistantMessageSchema,
+        toolMessageSchema,
+      ]),
+    )
+    .min(1),
   model: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
   max_tokens: z.number().int().positive().optional(),
@@ -113,54 +140,86 @@ const chatCompletionSchema = z.object({
 });
 
 function isRetryableError(err: any): boolean {
-  const msg = (err.message ?? '').toLowerCase();
-  return msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')
-    || msg.includes('quota') || msg.includes('resource_exhausted')
-    || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
-    || msg.includes('econnrefused') || msg.includes('econnreset')
-    || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error')
+  const msg = (err.message ?? "").toLowerCase();
+  return (
+    msg.includes("429") ||
+    msg.includes("rate limit") ||
+    msg.includes("too many requests") ||
+    msg.includes("quota") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("aborted") ||
+    msg.includes("timeout") ||
+    msg.includes("etimedout") ||
+    msg.includes("econnrefused") ||
+    msg.includes("econnreset") ||
+    msg.includes("503") ||
+    msg.includes("unavailable") ||
+    msg.includes("500") ||
+    msg.includes("internal server error") ||
     // 413: this model's payload limit is too small for the request, but another
     // provider in the fallback chain may have a larger limit. Same reasoning as 503.
-    || msg.includes('413') || msg.includes('payload too large') || msg.includes('request body too large')
-    || msg.includes('request entity too large') || msg.includes('content too large')
+    msg.includes("413") ||
+    msg.includes("payload too large") ||
+    msg.includes("request body too large") ||
+    msg.includes("request entity too large") ||
+    msg.includes("content too large") ||
     // 404: model deprecated/removed upstream (e.g. OpenRouter's "no endpoints found"
-    // for a model that's been pulled). Rotate to the next model in the chain.
-    || msg.includes('404') || msg.includes('not found') || msg.includes('no endpoints found');
+    // for a model that's been pulled). Rotate to the next model in the chain —
+    // setCooldown + the health checker will avoid this model on subsequent requests.
+    msg.includes("404") ||
+    msg.includes("not found") ||
+    msg.includes("no endpoints found") ||
+    // 400: one provider may reject parameters another accepts (e.g. max_tokens
+    // limits, unsupported params). The matching pattern is "api error 400"
+    // which comes from the OpenAI-compat provider's error formatting, not
+    // a bare "400" which is deliberately non-retryable for validation errors.
+    msg.includes("api error 400")
+  );
 }
 
 /** Stable session key: hash of the first user message using Web Crypto SHA-1. */
 async function getSessionKey(messages: ChatMessage[]): Promise<string | null> {
-  const firstUser = messages.find(m => m.role === 'user');
-  if (!firstUser || typeof firstUser.content !== 'string') return null;
-  const hasMultiTurn = messages.some(m => m.role === 'assistant');
+  const firstUser = messages.find((m) => m.role === "user");
+  if (!firstUser || typeof firstUser.content !== "string") return null;
+  const hasMultiTurn = messages.some((m) => m.role === "assistant");
   if (!hasMultiTurn) return null;
   const encoded = new TextEncoder().encode(firstUser.content);
-  const hashBuf = await crypto.subtle.digest('SHA-1', encoded);
+  const hashBuf = await crypto.subtle.digest("SHA-1", encoded);
   const hex = Array.from(new Uint8Array(hashBuf))
-    .map(b => b.toString(16).padStart(2, '0')).join('');
-  return `${hex}:${messages.length > 2 ? 'multi' : 'single'}`;
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `${hex}:${messages.length > 2 ? "multi" : "single"}`;
 }
 
-async function getStickyModel(env: Env, messages: ChatMessage[]): Promise<number | undefined> {
+async function getStickyModel(
+  env: Env,
+  messages: ChatMessage[],
+): Promise<number | undefined> {
   const sessionKey = await getSessionKey(messages);
   if (!sessionKey) return undefined;
   const stub = getRateLimiterStub(env);
-  const modelDbId = await doPost<number | null>(stub, '/get-sticky', { sessionKey });
+  const modelDbId = await doPost<number | null>(stub, "/get-sticky", {
+    sessionKey,
+  });
   return modelDbId ?? undefined;
 }
 
-async function setStickyModel(env: Env, messages: ChatMessage[], modelDbId: number): Promise<void> {
+async function setStickyModel(
+  env: Env,
+  messages: ChatMessage[],
+  modelDbId: number,
+): Promise<void> {
   const sessionKey = await getSessionKey(messages);
   if (!sessionKey) return;
   const stub = getRateLimiterStub(env);
-  await doPostNoReply(stub, '/set-sticky', { sessionKey, modelDbId });
+  await doPostNoReply(stub, "/set-sticky", { sessionKey, modelDbId });
 }
 
 async function logRequest(
   db: D1Database,
   platform: string,
   modelId: string,
+  keyId: number,
   status: string,
   inputTokens: number,
   outputTokens: number,
@@ -168,35 +227,54 @@ async function logRequest(
   error: string | null,
 ): Promise<void> {
   try {
-    await db.prepare(`
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(platform, modelId, status, inputTokens, outputTokens, Math.round(latencyMs), error).run();
+    await db
+      .prepare(
+        `
+      INSERT INTO requests (platform, model_id, key_id, status, input_tokens, output_tokens, latency_ms, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .bind(
+        platform,
+        modelId,
+        keyId,
+        status,
+        inputTokens,
+        outputTokens,
+        Math.round(latencyMs),
+        error,
+      )
+      .run();
   } catch (e) {
-    console.error('[Proxy] Failed to log request:', e);
+    console.error("[Proxy] Failed to log request:", e);
   }
 }
 
 // OpenAI-compatible /models endpoint
-proxyRouter.get('/models', async (c) => {
-  const { results: models } = await c.env.DB
-    .prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = 1 ORDER BY intelligence_rank')
-    .all<{ platform: string; model_id: string; display_name: string; context_window: number | null }>();
+proxyRouter.get("/models", async (c) => {
+  const { results: models } = await c.env.DB.prepare(
+    "SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = 1 ORDER BY intelligence_rank",
+  ).all<{
+    platform: string;
+    model_id: string;
+    display_name: string;
+    context_window: number | null;
+  }>();
 
   return c.json({
-    object: 'list',
+    object: "list",
     data: [
       {
         id: AUTO_MODEL_ID,
-        object: 'model',
+        object: "model",
         created: 0,
-        owned_by: 'freellmapi',
-        name: 'Auto (router picks the best available model)',
+        owned_by: "freellmapi",
+        name: "Auto (router picks the best available model)",
         context_window: null,
       },
-      ...models.map(m => ({
+      ...models.map((m) => ({
         id: m.model_id,
-        object: 'model',
+        object: "model",
         created: 0,
         owned_by: m.platform,
         name: m.display_name,
@@ -206,55 +284,79 @@ proxyRouter.get('/models', async (c) => {
   });
 });
 
-proxyRouter.post('/chat/completions', async (c) => {
+proxyRouter.post("/chat/completions", async (c) => {
   const start = Date.now();
   const db = c.env.DB;
-  const keyHex = c.get('keyHex');
+  const keyHex = c.get("keyHex");
 
   // Authenticate: all requests require a Bearer token matching the unified key.
   // Unlike the Node.js version, CF Workers don't expose a trusted local IP.
-  const token = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
+  const token = c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
   const unifiedKey = await getUnifiedApiKey(db);
   if (!token || !(await timingSafeEqual(token, unifiedKey))) {
-    return c.json({ error: { message: 'Invalid API key', type: 'authentication_error' } }, 401);
+    return c.json(
+      { error: { message: "Invalid API key", type: "authentication_error" } },
+      401,
+    );
   }
 
   // Validate request body
   const body = await c.req.json().catch(() => null);
   const parsed = chatCompletionSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json({
-      error: {
-        message: `Invalid request: ${parsed.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
-        type: 'invalid_request_error',
+    return c.json(
+      {
+        error: {
+          message: `Invalid request: ${parsed.error.issues.map((e: { message: string }) => e.message).join(", ")}`,
+          type: "invalid_request_error",
+        },
       },
-    }, 400);
+      400,
+    );
   }
 
   const {
-    model: requestedModel, temperature, max_tokens, top_p,
-    stream: wantStream, tools, tool_choice, parallel_tool_calls,
+    model: requestedModel,
+    temperature,
+    max_tokens,
+    top_p,
+    stream: wantStream,
+    tools,
+    tool_choice,
+    parallel_tool_calls,
   } = parsed.data;
 
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
-    if (m.role === 'assistant') {
+    if (m.role === "assistant") {
       return {
-        role: 'assistant',
+        role: "assistant",
         content: m.content ?? null,
         ...(m.name ? { name: m.name } : {}),
-        ...(m.tool_calls ? { tool_calls: m.tool_calls.map(tc => ({
-          id: tc.id, type: tc.type, function: tc.function,
-          thought_signature: tc.thought_signature,
-        })) } : {}),
+        ...(m.tool_calls
+          ? {
+              tool_calls: m.tool_calls.map((tc) => ({
+                id: tc.id,
+                type: tc.type,
+                function: tc.function,
+                thought_signature: tc.thought_signature,
+              })),
+            }
+          : {}),
       };
     }
-    if (m.role === 'tool') {
+    if (m.role === "tool") {
       return {
-        role: 'tool', content: m.content, tool_call_id: m.tool_call_id,
+        role: "tool",
+        content: m.content,
+        tool_call_id: m.tool_call_id,
         ...(m.name ? { name: m.name } : {}),
       };
     }
-    return { role: m.role, content: m.content, ...(m.name ? { name: m.name } : {}) };
+    return {
+      role: m.role,
+      content: m.content,
+      ...(m.name ? { name: m.name } : {}),
+    };
   });
 
   // Token estimation is intentionally a heuristic (~4 chars per token).
@@ -277,21 +379,26 @@ proxyRouter.post('/chat/completions', async (c) => {
   } else if (requestedModel) {
     // Try exact match first
     let enabled = await db
-      .prepare('SELECT id, platform, model_id FROM models WHERE model_id = ? AND enabled = 1')
-      .bind(requestedModel).first<{ id: number; platform: string; model_id: string }>();
+      .prepare(
+        "SELECT id, platform, model_id FROM models WHERE model_id = ? AND enabled = 1",
+      )
+      .bind(requestedModel)
+      .first<{ id: number; platform: string; model_id: string }>();
 
     // Try provider::model-id format (e.g. "groq::llama-3.3-70b-versatile")
     if (!enabled) {
-      const sepIdx = requestedModel.indexOf('::');
+      const sepIdx = requestedModel.indexOf("::");
       if (sepIdx > 0) {
         const platform = requestedModel.slice(0, sepIdx);
         const modelId = requestedModel.slice(sepIdx + 2);
         enabled = await db
-          .prepare('SELECT id, platform, model_id FROM models WHERE platform = ? AND model_id = ? AND enabled = 1')
-          .bind(platform, modelId).first<{ id: number; platform: string; model_id: string }>();
+          .prepare(
+            "SELECT id, platform, model_id FROM models WHERE platform = ? AND model_id = ? AND enabled = 1",
+          )
+          .bind(platform, modelId)
+          .first<{ id: number; platform: string; model_id: string }>();
       }
     }
-
 
     if (enabled) {
       preferredModel = enabled.id;
@@ -299,26 +406,33 @@ proxyRouter.post('/chat/completions', async (c) => {
     } else {
       // Check if disabled (exact match) or not in catalog
       let disabled = await db
-        .prepare('SELECT id FROM models WHERE model_id = ?')
-        .bind(requestedModel).first<{ id: number }>();
+        .prepare("SELECT id FROM models WHERE model_id = ?")
+        .bind(requestedModel)
+        .first<{ id: number }>();
       if (!disabled) {
-        const sepIdx = requestedModel.indexOf('::');
+        const sepIdx = requestedModel.indexOf("::");
         if (sepIdx > 0) {
           const platform = requestedModel.slice(0, sepIdx);
           const modelId = requestedModel.slice(sepIdx + 2);
           disabled = await db
-            .prepare('SELECT id FROM models WHERE platform = ? AND model_id = ?')
-            .bind(platform, modelId).first<{ id: number }>();
+            .prepare(
+              "SELECT id FROM models WHERE platform = ? AND model_id = ?",
+            )
+            .bind(platform, modelId)
+            .first<{ id: number }>();
         }
       }
-      const reason = disabled ? 'is disabled' : 'is not in the catalog';
-      return c.json({
-        error: {
-          message: `Model '${requestedModel}' ${reason}. Use '${AUTO_MODEL_ID}' (or omit the 'model' field) to auto-route, or call /v1/models for the available list.`,
-          type: 'invalid_request_error',
-          code: 'model_not_found',
+      const reason = disabled ? "is disabled" : "is not in the catalog";
+      return c.json(
+        {
+          error: {
+            message: `Model '${requestedModel}' ${reason}. Use '${AUTO_MODEL_ID}' (or omit the 'model' field) to auto-route, or call /v1/models for the available list.`,
+            type: "invalid_request_error",
+            code: "model_not_found",
+          },
         },
-      }, 400);
+        400,
+      );
     }
   } else {
     preferredModel = await getStickyModel(c.env, messages);
@@ -330,14 +444,30 @@ proxyRouter.post('/chat/completions', async (c) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = await routeRequest(db, c.env, keyHex, estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, pinModel);
+      route = await routeRequest(
+        db,
+        c.env,
+        keyHex,
+        estimatedTotal,
+        skipKeys.size > 0 ? skipKeys : undefined,
+        preferredModel,
+        pinModel,
+      );
     } catch (err: any) {
-      console.error('[Proxy] routeRequest error:', err);
+      console.error("[Proxy] routeRequest error:", err);
       const status = lastError ? 429 : (err.status ?? 503);
       const message = lastError
         ? `All models rate-limited. Last error: ${lastError.message}`
         : err.message;
-      return c.json({ error: { message, type: lastError ? 'rate_limit_error' : 'routing_error' } }, status);
+      return c.json(
+        {
+          error: {
+            message,
+            type: lastError ? "rate_limit_error" : "routing_error",
+          },
+        },
+        status,
+      );
     }
 
     await recordRequest(c.env, route.platform, route.modelId, route.keyId);
@@ -349,105 +479,215 @@ proxyRouter.post('/chat/completions', async (c) => {
         let streamStarted = false;
 
         // Set SSE headers on the context before calling stream()
-        c.res.headers.set('Content-Type', 'text/event-stream');
-        c.res.headers.set('Cache-Control', 'no-cache');
-        c.res.headers.set('X-Routed-Via', `${route.platform}/${route.modelId}`);
-        if (attempt > 0) c.res.headers.set('X-Fallback-Attempts', String(attempt));
+        c.res.headers.set("Content-Type", "text/event-stream");
+        c.res.headers.set("Cache-Control", "no-cache");
+        c.res.headers.set("X-Routed-Via", `${route.platform}/${route.modelId}`);
+        if (attempt > 0)
+          c.res.headers.set("X-Fallback-Attempts", String(attempt));
 
         return stream(c, async (s) => {
           const gen = route.provider.streamChatCompletion(
-            route.apiKey, messages, route.modelId,
-            { temperature, max_tokens, top_p, tools, tool_choice: tool_choice as any, parallel_tool_calls },
+            route.apiKey,
+            messages,
+            route.modelId,
+            {
+              temperature,
+              max_tokens,
+              top_p,
+              tools,
+              tool_choice: tool_choice as any,
+              parallel_tool_calls,
+            },
           );
 
           try {
             for await (const chunk of gen) {
               if (!streamStarted) streamStarted = true;
-              const text = chunk.choices[0]?.delta?.content ?? '';
+              const text = chunk.choices[0]?.delta?.content ?? "";
               totalOutputTokens += Math.ceil(text.length / 4);
               await s.write(`data: ${JSON.stringify(chunk)}\n\n`);
             }
 
-            await s.write('data: [DONE]\n\n');
+            await s.write("data: [DONE]\n\n");
 
             await Promise.all([
-              recordTokens(c.env, route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens),
+              recordTokens(
+                c.env,
+                route.platform,
+                route.modelId,
+                route.keyId,
+                estimatedInputTokens + totalOutputTokens,
+              ),
               recordSuccess(c.env, route.modelDbId),
               setStickyModel(c.env, messages, route.modelDbId),
-              logRequest(db, route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null),
+              logRequest(
+                db,
+                route.platform,
+                route.modelId,
+                route.keyId,
+                "success",
+                estimatedInputTokens,
+                totalOutputTokens,
+                Date.now() - start,
+                null,
+              ),
             ]);
           } catch (streamErr: any) {
             if (streamStarted) {
               // Mid-stream error — emit error SSE frame then close cleanly
-              console.error(`[Proxy] Mid-stream error from ${route.displayName}:`, streamErr.message);
-              const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
-              try { await s.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
-              try { await s.write('data: [DONE]\n\n'); } catch { /* socket gone */ }
-              await logRequest(db, route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, streamErr.message);
+              console.error(
+                `[Proxy] Mid-stream error from ${route.displayName}:`,
+                streamErr.message,
+              );
+              const payload = {
+                error: {
+                  message: `Provider error (${route.displayName}): stream interrupted`,
+                  type: "stream_error",
+                },
+              };
+              try {
+                await s.write(`data: ${JSON.stringify(payload)}\n\n`);
+              } catch {
+                /* socket gone */
+              }
+              try {
+                await s.write("data: [DONE]\n\n");
+              } catch {
+                /* socket gone */
+              }
+              await logRequest(
+                db,
+                route.platform,
+                route.modelId,
+                route.keyId,
+                "error",
+                estimatedInputTokens,
+                totalOutputTokens,
+                Date.now() - start,
+                streamErr.message,
+              );
             } else {
               // Pre-stream error — can't retry via outer loop when inside stream()
-              const payload = { error: { message: streamErr.message, type: 'provider_error' } };
+              const payload = {
+                error: { message: streamErr.message, type: "provider_error" },
+              };
               await s.write(`data: ${JSON.stringify(payload)}\n\n`);
-              await s.write('data: [DONE]\n\n');
-              await logRequest(db, route.platform, route.modelId, 'error', estimatedInputTokens, 0, Date.now() - start, streamErr.message);
+              await s.write("data: [DONE]\n\n");
+              await logRequest(
+                db,
+                route.platform,
+                route.modelId,
+                route.keyId,
+                "error",
+                estimatedInputTokens,
+                0,
+                Date.now() - start,
+                streamErr.message,
+              );
             }
           }
         });
       } else {
         // Non-streaming
         const result = await route.provider.chatCompletion(
-          route.apiKey, messages, route.modelId,
-          { temperature, max_tokens, top_p, tools, tool_choice: tool_choice as any, parallel_tool_calls },
+          route.apiKey,
+          messages,
+          route.modelId,
+          {
+            temperature,
+            max_tokens,
+            top_p,
+            tools,
+            tool_choice: tool_choice as any,
+            parallel_tool_calls,
+          },
         );
 
         const totalTokens = result.usage?.total_tokens ?? 0;
         await Promise.all([
-          recordTokens(c.env, route.platform, route.modelId, route.keyId, totalTokens),
+          recordTokens(
+            c.env,
+            route.platform,
+            route.modelId,
+            route.keyId,
+            totalTokens,
+          ),
           recordSuccess(c.env, route.modelDbId),
           setStickyModel(c.env, messages, route.modelDbId),
-          logRequest(db, route.platform, route.modelId, 'success',
+          logRequest(
+            db,
+            route.platform,
+            route.modelId,
+            route.keyId,
+            "success",
             result.usage?.prompt_tokens ?? 0,
             result.usage?.completion_tokens ?? 0,
-            Date.now() - start, null),
+            Date.now() - start,
+            null,
+          ),
         ]);
 
         return new Response(JSON.stringify(result), {
           headers: {
-            'Content-Type': 'application/json',
-            'X-Routed-Via': `${route.platform}/${route.modelId}`,
-            ...(attempt > 0 ? { 'X-Fallback-Attempts': String(attempt) } : {}),
+            "Content-Type": "application/json",
+            "X-Routed-Via": `${route.platform}/${route.modelId}`,
+            ...(attempt > 0 ? { "X-Fallback-Attempts": String(attempt) } : {}),
           },
         });
       }
     } catch (err: any) {
       const latency = Date.now() - start;
-      await logRequest(db, route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message);
+      await logRequest(
+        db,
+        route.platform,
+        route.modelId,
+        route.keyId,
+        "error",
+        estimatedInputTokens,
+        0,
+        latency,
+        err.message,
+      );
 
       if (isRetryableError(err)) {
         const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
         skipKeys.add(skipId);
         await Promise.all([
-          setCooldown(c.env, route.platform, route.modelId, route.keyId, 120_000),
+          setCooldown(
+            c.env,
+            route.platform,
+            route.modelId,
+            route.keyId,
+            120_000,
+          ),
           recordRateLimitHit(c.env, route.modelDbId),
         ]);
         lastError = err;
-        console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        console.log(
+          `[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${MAX_RETRIES})`,
+        );
         continue;
       }
 
-      return c.json({
-        error: {
-          message: `Provider error (${route.displayName}): ${err.message}`,
-          type: 'provider_error',
+      return c.json(
+        {
+          error: {
+            message: `Provider error (${route.displayName}): ${err.message}`,
+            type: "provider_error",
+          },
         },
-      }, 502);
+        502,
+      );
     }
   }
 
-  return c.json({
-    error: {
-      message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`,
-      type: 'rate_limit_error',
+  return c.json(
+    {
+      error: {
+        message: `All models rate-limited after ${MAX_RETRIES} attempts. Last: ${lastError?.message}`,
+        type: "rate_limit_error",
+      },
     },
-  }, 429);
+    429,
+  );
 });
