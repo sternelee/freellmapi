@@ -13,3 +13,6 @@ server/data/
 deploy-pi.sh
 update-hermes.sh
 .wrangler
+
+# Monetization planning — private, never committed
+monetization/
