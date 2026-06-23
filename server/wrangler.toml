@@ -1,6 +1,7 @@
 name = "freellmapi"
 main = "src/index.ts"
 compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
 
 # Serve the React SPA alongside the Worker
 [assets]

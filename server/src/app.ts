@@ -8,10 +8,15 @@ import { fallbackRouter } from './routes/fallback.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
+import { createProxyRateLimiter } from './middleware/rateLimit.js';
 import { timingSafeEqual } from './lib/crypto.js';
 import { getUnifiedApiKey, getOrCreateEncryptionKeyHex } from './db/index.js';
 import type { Env } from './types.js';
 
+// NOTE: Upstream added several new routers (responses, anthropic, profiles,
+// embeddings, media, premium) in Express style. Per the Upstream Merge
+// Policy in AGENTS.md, we reject Express migration. Those routes are not
+// mounted here; port them to Hono first if you need them.
 export function createApp() {
   const app = new Hono<{ Bindings: Env; Variables: { keyHex: string } }>();
 
@@ -26,6 +31,7 @@ export function createApp() {
 
   // Health ping — no auth required
   app.get('/ping', (c) => c.text('ok'));
+  app.get('/api/ping', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
   // ── Encryption key ────────────────────────────────────────────────────────
   // Resolved once per API request and stored in context variables.
@@ -61,7 +67,6 @@ export function createApp() {
   };
   app.use('/api/fallback', requireWriteAuth);
 
-  // ── Routes ────────────────────────────────────────────────────────────────
   app.route('/api/keys', keysRouter);
   app.route('/api/models', modelsRouter);
   app.route('/api/fallback', fallbackRouter);
@@ -69,7 +74,10 @@ export function createApp() {
   app.route('/api/health', healthRouter);
   app.route('/api/settings', settingsRouter);
 
-  // OpenAI-compatible proxy — auth is handled inside the proxy route itself
+  // OpenAI-compatible proxy. Per-IP rate limiting (#35 item #6) runs first so
+  // it throttles unauthenticated brute-force / flood attempts before any
+  // routing work. Tune via PROXY_RATE_LIMIT_RPM; 0 disables it.
+  app.use('/v1', createProxyRateLimiter());
   app.route('/v1', proxyRouter);
 
   // ── Error handler ─────────────────────────────────────────────────────────

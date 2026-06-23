@@ -8,10 +8,23 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { PageHeader } from '@/components/page-header'
-import type { ApiKey, Platform } from '../../../shared/types'
+import type { ApiKey, Platform, ProviderQuotaState } from '../../../shared/types'
 import { Pencil, ExternalLink, Globe } from 'lucide-react'
 import { formatSqliteUtcToLocalTime } from '@/lib/utils'
 import { useI18n } from '@/i18n'
+
+// Claude (Anthropic) model families the mapping editor exposes. Anthropic
+// clients send these names; each maps to "auto" (router picks a free model) or
+// a pinned catalog model. Mirrors services/anthropic-map.ts on the server.
+type ClaudeFamily = 'default' | 'opus' | 'sonnet' | 'haiku'
+type AnthropicMap = Record<ClaudeFamily, string>
+interface MappableModel { modelId: string; displayName: string; enabled: boolean }
+const FAMILY_ORDER: { key: ClaudeFamily; labelKey: string }[] = [
+  { key: 'default', labelKey: 'keys.familyDefault' },
+  { key: 'opus', labelKey: 'keys.familyOpus' },
+  { key: 'sonnet', labelKey: 'keys.familySonnet' },
+  { key: 'haiku', labelKey: 'keys.familyHaiku' },
+]
 
 // Small "Get API key" external link shown next to a provider (#137).
 function GetKeyLink({ url }: { url: string }) {
@@ -55,6 +68,8 @@ const PLATFORMS: { value: Platform; label: string; url: string; keyless?: boolea
   { value: 'huggingface', label: 'HuggingFace Router', url: 'https://huggingface.co/settings/tokens' },
   { value: 'opencode', label: 'OpenCode Zen (free key)', url: 'https://opencode.ai/auth' },
   { value: 'agnes', label: 'Agnes AI (free key)', url: 'https://platform.agnes-ai.com' },
+  { value: 'reka', label: 'Reka (free key)', url: 'https://platform.reka.ai' },
+  { value: 'siliconflow', label: 'SiliconFlow (image + TTS)', url: 'https://siliconflow.com' },
 ]
 
 // 'custom' is configured through its own form (base URL + model), not the
@@ -94,6 +109,55 @@ interface HealthPlatform {
 interface HealthData {
   platforms: HealthPlatform[]
   keys: { id: number; platform: string; status: string; lastCheckedAt: string | null }[]
+  quotaStates: ProviderQuotaState[]
+}
+
+function formatQuotaNumber(value: number | null): string {
+  return value == null ? '—' : new Intl.NumberFormat().format(value)
+}
+
+function formatResetAt(value: string | null): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
+}
+
+function QuotaSignalsSection({ states }: { states: ProviderQuotaState[] }) {
+  return (
+    <section>
+      <h2 className="text-sm font-medium mb-3">Quota signals</h2>
+      {states.length === 0 ? (
+        <div className="rounded-3xl border border-dashed p-6 text-sm text-muted-foreground bg-card">
+          No quota observations yet. The dashboard will fill in after providers return headers, quota errors, or validation signals.
+        </div>
+      ) : (
+        <div className="rounded-3xl border divide-y bg-card overflow-hidden">
+          {states.map((state) => (
+            <div key={`${state.platform}:${state.keyId}:${state.quotaPoolKey}:${state.metric}`} className="px-4 py-3.5 text-sm">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-medium">{state.platform}</span>
+                <span className="text-muted-foreground">key #{state.keyId}</span>
+                <span className="text-muted-foreground">pool {state.quotaPoolKey}</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{state.metric}</span>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {state.source} · {Math.round(state.confidence * 100)}%
+                </span>
+              </div>
+              <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
+                <div><span className="text-foreground">Limit</span> {formatQuotaNumber(state.limit)}</div>
+                <div><span className="text-foreground">Remaining</span> {formatQuotaNumber(state.remaining)}</div>
+                <div><span className="text-foreground">Reset</span> {formatResetAt(state.resetAt)}</div>
+                <div><span className="text-foreground">Observed</span> {formatSqliteUtcToLocalTime(state.observedAt, { hour: '2-digit', minute: '2-digit' })}</div>
+              </div>
+              {state.notes && (
+                <p className="mt-2 text-xs text-muted-foreground">{state.notes}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
 }
 
 function UnifiedKeySection() {
@@ -168,6 +232,8 @@ function UnifiedKeySection() {
         <code className="font-mono">/v1/chat/completions</code>
         <span className="text-muted-foreground">{t('keys.endpointResponses')}</span>
         <code className="font-mono">/v1/responses</code>
+        <span className="text-muted-foreground">{t('keys.endpointMessages')}</span>
+        <code className="font-mono">/v1/messages <span className="text-muted-foreground">({t('keys.endpointMessagesHint')})</span></code>
         <span className="text-muted-foreground">{t('keys.endpointEmbeddings')}</span>
         <code className="font-mono">/v1/embeddings <span className="text-muted-foreground">({t('keys.endpointEmbeddingsHint')})</span></code>
       </div>
@@ -375,9 +441,99 @@ function CustomProviderSection() {
   )
 }
 
+// Claude (Anthropic) model mapping: point a Claude / Anthropic SDK client at
+// this server and decide how its built-in model names route into the free pool.
+function AnthropicSection() {
+  const { t } = useI18n()
+  const queryClient = useQueryClient()
+
+  // Anthropic clients append `/v1/messages` to the base URL, so they want the
+  // bare origin (OpenAI clients use origin + /v1, shown in the key section).
+  const origin = import.meta.env.DEV
+    ? `http://${window.location.hostname}:${__SERVER_PORT__}`
+    : window.location.origin
+
+  const { data: mapData } = useQuery<{ map: AnthropicMap }>({
+    queryKey: ['anthropic-map'],
+    queryFn: () => apiFetch('/api/settings/anthropic-map'),
+  })
+  const { data: models = [] } = useQuery<MappableModel[]>({
+    queryKey: ['fallback'],
+    queryFn: () => apiFetch('/api/fallback'),
+  })
+
+  const [draft, setDraft] = useState<AnthropicMap | null>(null)
+  useEffect(() => { if (mapData?.map) setDraft(mapData.map) }, [mapData])
+
+  const save = useMutation({
+    mutationFn: (map: AnthropicMap) => apiFetch('/api/settings/anthropic-map', { method: 'PUT', body: JSON.stringify(map) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['anthropic-map'] }),
+  })
+
+  // Dedup catalog models by id; only enabled models can be pinned.
+  const modelOptions = Array.from(new Map(models.filter(m => m.enabled).map(m => [m.modelId, m])).values())
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
+  const dirty = !!(draft && mapData?.map && JSON.stringify(draft) !== JSON.stringify(mapData.map))
+
+  return (
+    <section className="rounded-3xl border bg-card p-5">
+      <div className="flex items-start justify-between gap-4 mb-3">
+        <div>
+          <h2 className="text-sm font-medium">{t('keys.anthropicTitle')}</h2>
+          <p className="text-xs text-muted-foreground mt-0.5 max-w-prose">{t('keys.anthropicDesc')}</p>
+        </div>
+        <Button size="sm" disabled={!dirty || save.isPending} onClick={() => draft && save.mutate(draft)}>
+          {save.isSuccess && !dirty ? t('keys.anthropicSaved') : t('keys.anthropicSave')}
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs mb-4">
+        <span className="text-muted-foreground">{t('keys.anthropicBaseUrl')}</span>
+        <code className="font-mono break-all">{origin}</code>
+        <span className="text-muted-foreground">{t('keys.anthropicAuth')}</span>
+        <code className="font-mono">x-api-key</code>
+      </div>
+
+      <div className="space-y-2">
+        {FAMILY_ORDER.map(({ key, labelKey }) => (
+          <div key={key} className="flex items-center gap-3">
+            <span className="w-40 text-xs font-medium shrink-0">{t(labelKey)}</span>
+            <Select
+              value={draft?.[key] ?? 'auto'}
+              onValueChange={(v) => setDraft(d => (d ? { ...d, [key]: v } : d))}
+            >
+              <SelectTrigger className="w-[320px] max-w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">{t('keys.anthropicAuto')}</SelectItem>
+                {/* Keep a currently-pinned-but-now-disabled model selectable. */}
+                {draft?.[key] && draft[key] !== 'auto' && !modelOptions.some(m => m.modelId === draft[key]) && (
+                  <SelectItem value={draft[key]}>{draft[key]}</SelectItem>
+                )}
+                {modelOptions.map(m => (
+                  <SelectItem key={m.modelId} value={m.modelId}>{m.displayName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-muted-foreground mt-4 max-w-prose">{t('keys.anthropicNote')}</p>
+    </section>
+  )
+}
+
+type KeysTab = 'providers' | 'apiKey' | 'anthropic'
+const KEYS_TABS: { id: KeysTab; labelKey: string }[] = [
+  { id: 'providers', labelKey: 'keys.tabProviders' },
+  { id: 'apiKey', labelKey: 'keys.tabApiKey' },
+  { id: 'anthropic', labelKey: 'keys.tabAnthropic' },
+]
+
 export default function KeysPage() {
   const { t } = useI18n()
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState<KeysTab>('providers')
   const [platform, setPlatform] = useState<Platform | ''>('')
   const [apiKey, setApiKey] = useState('')
   const [accountId, setAccountId] = useState('')
@@ -529,18 +685,43 @@ export default function KeysPage() {
         title={t('keys.pageTitle')}
         description={t('keys.pageDescription')}
         actions={
-          keys.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
-              {checkAll.isPending ? t('keys.checking') : t('keys.checkAll')}
-            </Button>
-          )
+          <>
+            {tab === 'providers' && keys.length > 0 && (
+              <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
+                {checkAll.isPending ? t('keys.checking') : t('keys.checkAll')}
+              </Button>
+            )}
+            <div className="inline-flex gap-1 rounded-xl border p-1">
+              {KEYS_TABS.map(tb => (
+                <button
+                  key={tb.id}
+                  type="button"
+                  onClick={() => setTab(tb.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    tab === tb.id ? 'bg-foreground text-background font-medium' : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                >
+                  {t(tb.labelKey)}
+                </button>
+              ))}
+            </div>
+          </>
         }
       />
 
       <div className="space-y-8">
-        <UnifiedKeySection />
+        {tab === 'apiKey' && (
+          <>
+            <UnifiedKeySection />
+            <ProxySettingsSection />
+          </>
+        )}
 
-        <ProxySettingsSection />
+        {tab === 'anthropic' && <AnthropicSection />}
+
+        {tab === 'providers' && (
+        <>
+        <QuotaSignalsSection states={(healthData?.quotaStates ?? []).slice(0, 24)} />
 
         <section>
           <h2 className="text-sm font-medium mb-3">{t('keys.addProvider')}</h2>
@@ -720,6 +901,8 @@ export default function KeysPage() {
             </div>
           )}
         </section>
+        </>
+        )}
       </div>
     </div>
   )

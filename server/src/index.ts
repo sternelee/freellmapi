@@ -7,8 +7,7 @@
  *  - RateLimiterDO: Durable Object class for rate-limit state
  */
 import { createApp } from './app.js';
-import { ensureSchema } from './db/index.js';
-import { getOrCreateEncryptionKeyHex } from './db/index.js';
+import { ensureSchema, getOrCreateEncryptionKeyHex } from './db/index.js';
 import { checkAllKeys } from './services/health.js';
 import type { Env } from './types.js';
 

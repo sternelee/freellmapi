@@ -236,3 +236,20 @@ export async function getOrCreateEncryptionKeyHex(
     .run();
   return hex;
 }
+
+// ── Sync stubs (used by upstream modules that haven't been ported to D1 async) ──
+// ponytail: in-memory only — fine for read paths inside one request, lost across
+// requests. Real persistence lives in the `settings` D1 table via setSettingAsync.
+const _settings = new Map<string, string>();
+
+export function getDb(): never {
+  throw new Error('getDb() is not available on the Cloudflare Workers D1 build. Use the async D1 API via ensureSchema(db).');
+}
+
+export function getSetting(key: string): string {
+  return _settings.get(key) ?? '';
+}
+
+export function setSetting(key: string, value: string): void {
+  _settings.set(key, value);
+}

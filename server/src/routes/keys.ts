@@ -6,10 +6,10 @@ import type { Env } from '../types.js';
 export const keysRouter = new Hono<{ Bindings: Env; Variables: { keyHex: string } }>();
 
 const PLATFORMS = [
-  'google', 'groq', 'cerebras', 'sambanova', 'nvidia', 'mistral',
+  'google', 'groq', 'cerebras', 'nvidia', 'mistral',
   'openrouter', 'github', 'cohere', 'cloudflare', 'zhipu', 'zai',
   'ollama', 'kilo', 'pollinations', 'llm7', 'huggingface',
-  'zenmux',
+  'zenmux', 'opencode', 'ovh', 'agnes', 'reka', 'siliconflow', 'custom',
 ] as const;
 
 const createKeySchema = z.object({

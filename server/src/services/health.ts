@@ -2,6 +2,7 @@ import type { D1DB } from '../db/index.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
+import { inferQuotaPoolKey } from './provider-quota.js';
 
 interface KeyRow {
   id: number;

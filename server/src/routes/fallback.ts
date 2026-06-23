@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { getAllPenalties } from '../services/router.js';
+import { parseBudget } from '../lib/budget.js';
+import { getModelGroups } from '../services/model-groups.js';
 import type { Env } from '../types.js';
 
 export const fallbackRouter = new Hono<{ Bindings: Env }>();
@@ -12,7 +14,9 @@ fallbackRouter.get('/', async (c) => {
     db.prepare(`
       SELECT fc.model_db_id, fc.priority, fc.enabled,
              m.platform, m.model_id, m.display_name, m.intelligence_rank,
-             m.speed_rank, m.size_label, m.rpm_limit, m.rpd_limit, m.monthly_token_budget
+             m.speed_rank, m.size_label, m.rpm_limit, m.rpd_limit,
+             m.tpm_limit, m.tpd_limit, m.context_window,
+             m.monthly_token_budget, m.supports_vision, m.supports_tools
       FROM fallback_config fc
       JOIN models m ON m.id = fc.model_db_id
       ORDER BY fc.priority ASC
@@ -26,10 +30,23 @@ fallbackRouter.get('/', async (c) => {
   const keyCountMap = new Map(keyCounts.map(k => [k.platform, k.count]));
   const penaltyMap = new Map(penalties.map(p => [p.modelDbId, p]));
 
+  // Logical-model grouping per row, so the dashboard can collapse the same
+  // model served by several providers into one expandable group.
+  const groupByDbId = new Map<number, { groupKey: string; canonicalId: string; groupLabel: string }>();
+  for (const g of getModelGroups()) {
+    for (const m of g.members) {
+      groupByDbId.set(m.model_db_id, { groupKey: g.groupKey, canonicalId: g.canonicalId, groupLabel: g.groupLabel });
+    }
+  }
+
   return c.json(rows.map(r => {
     const penalty = penaltyMap.get(r.model_db_id);
+    const group = groupByDbId.get(r.model_db_id);
     return {
       modelDbId: r.model_db_id,
+      groupKey: group?.groupKey,
+      canonicalId: group?.canonicalId,
+      groupLabel: group?.groupLabel,
       priority: r.priority,
       effectivePriority: r.priority + (penalty?.penalty ?? 0),
       penalty: penalty?.penalty ?? 0,
@@ -43,7 +60,13 @@ fallbackRouter.get('/', async (c) => {
       sizeLabel: r.size_label,
       rpmLimit: r.rpm_limit,
       rpdLimit: r.rpd_limit,
+      tpmLimit: r.tpm_limit,
+      tpdLimit: r.tpd_limit,
+      contextWindow: r.context_window,
       monthlyTokenBudget: r.monthly_token_budget,
+      monthlyTokenBudgetTokens: parseBudget(r.monthly_token_budget),
+      supportsVision: r.supports_vision === 1,
+      supportsTools: r.supports_tools === 1,
       keyCount: keyCountMap.get(r.platform) ?? 0,
     };
   }));
@@ -113,14 +136,6 @@ fallbackRouter.get('/token-usage', async (c) => {
   ]);
 
   const platformSet = new Set(platforms.map(p => p.platform));
-
-  function parseBudget(s: string): number {
-    const m = s.match(/~?([\d.]+)(?:-([\d.]+))?([MK])?/);
-    if (!m) return 0;
-    const high = parseFloat(m[2] ?? m[1]);
-    const unit = m[3] === 'M' ? 1_000_000 : m[3] === 'K' ? 1_000 : 1;
-    return high * unit;
-  }
 
   const modelBudgets = models
     .filter(m => platformSet.has(m.platform))
