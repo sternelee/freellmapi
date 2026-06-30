@@ -4,6 +4,7 @@ import { GoogleProvider } from './google.js';
 import { OpenAICompatProvider } from './openai-compat.js';
 import { CohereProvider } from './cohere.js';
 import { CloudflareProvider } from './cloudflare.js';
+import { AIHordeProvider } from './aihorde.js';
 
 const providers = new Map<Platform, BaseProvider>();
 
@@ -83,13 +84,6 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
 }));
 
-// Z.ai (Zhipu international) — OpenAI-compatible, same models as Zhipu but hosted overseas
-register(new OpenAICompatProvider({
-  platform: 'zai',
-  name: 'Z.ai',
-  baseUrl: 'https://api.z.ai/api/paas/v4',
-}));
-
 // Hugging Face Inference Providers router — re-added in V13. The V4 removal
 // reason ("tool-call format issues") was the legacy serverless route that
 // emitted tool calls as text; the new router.huggingface.co meta-router
@@ -100,14 +94,6 @@ register(new OpenAICompatProvider({
   name: 'HuggingFace Router',
   baseUrl: 'https://router.huggingface.co/v1',
 }));
-// Zenmux — OpenAI-compatible aggregator. Free-tier with 3 models:
-// google/gemini-3.5-flash-free, z-ai/glm-4.7-flash-free, z-ai/glm-4.6v-flash-free.
-register(new OpenAICompatProvider({
-  platform: 'zenmux',
-  name: 'Zenmux',
-  baseUrl: 'https://zenmux.ai/api/v1',
-}));
-// Moonshot direct integration was dropped in V4
 
 // Moonshot direct integration was dropped in V4 (paid-only); MiniMax direct
 // was dropped in V4 (superseded by the OpenRouter route).
@@ -243,6 +229,54 @@ register(new OpenAICompatProvider({
   name: 'SiliconFlow',
   baseUrl: 'https://api.siliconflow.com/v1',
 }));
+
+// Routeway — OpenAI-compatible aggregator (api.routeway.ai/v1). Free models
+// carry a ':free' suffix and cost $0; the free pool is rate-limited (docs say
+// 20 rpm / 200 rpd, but a live test on 2026-06-26 observed a stricter 5 rpm).
+// Cloudflare in front rejects non-browser User-Agents with error 1010, so a
+// browser-style UA is required. Free key from routeway.ai (no card). Catalog
+// rows live in the catalog (premium → age into free).
+register(new OpenAICompatProvider({
+  platform: 'routeway',
+  name: 'Routeway',
+  baseUrl: 'https://api.routeway.ai/v1',
+  extraHeaders: {
+    'User-Agent': 'Mozilla/5.0 FreeLLMAPI/1.0',
+  },
+}));
+
+// BazaarLink — OpenAI-compatible aggregator (bazaarlink.ai/api/v1). The
+// 'auto:free' route picks a currently-available zero-cost model (routed to
+// deepseek-v4-flash in a 2026-06-26 live test, usage.cost 0); direct model IDs
+// are paid, so only 'auto:free' is cataloged. Free key from bazaarlink.ai
+// (no card, supports agent self-registration). Reasoning models can consume a
+// tiny max_tokens internally, so default to a non-trivial output cap.
+register(new OpenAICompatProvider({
+  platform: 'bazaarlink',
+  name: 'BazaarLink',
+  baseUrl: 'https://bazaarlink.ai/api/v1',
+}));
+
+// AINative Studio — OpenAI-compatible aggregator (api.ainative.studio/api/v1).
+// Advertises a recurring ~10M tokens/month free allocation (no card), though
+// its own pages disagree on scale; treat the quota as unverified until a real
+// account confirms it. Bearer auth works (X-API-Key also accepted). Catalog
+// rows live in the catalog (premium → age into free).
+register(new OpenAICompatProvider({
+  platform: 'ainative',
+  name: 'AINative Studio',
+  baseUrl: 'https://api.ainative.studio/api/v1',
+}));
+
+// AI Horde — free, community-powered inference (volunteer workers) via an
+// OpenAI-compatible proxy. Dedicated AIHordeProvider (not OpenAICompatProvider)
+// because the proxy is queue-based and diverges from the OpenAI contract:
+// max_tokens must be >=16, stop must be an array, no tool calling, usage is
+// reported as kudos (synthesized into token counts), and calls can take tens of
+// seconds (120s timeout, no upstream streaming). Registered keyless so it
+// auto-configures and works anonymously (key 0000000000, lowest queue
+// priority); a registered aihorde.net key raises priority. See issue #345.
+register(new AIHordeProvider());
 
 // Placeholder so getProvider('custom')/hasProvider('custom')/getAllProviders()
 // behave — but the real instance is built per-key by resolveProvider(), since
